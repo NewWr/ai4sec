@@ -187,14 +187,6 @@ ai4sec/
 └── docs/             # Release and deployment notes
 ```
 
-## Public Release and Privacy
-
-Do not commit `.env`, `docker-data/`, `backend/data/`, `dify-rag/`, PDFs, databases, or API keys. Run the release check before publishing:
-
-```bash
-scripts/check_public_release.sh
-```
-
 ## License
 
 Released under the [MIT License](./LICENSE).
