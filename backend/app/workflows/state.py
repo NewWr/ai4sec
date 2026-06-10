@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+
+class MainGraphState(TypedDict, total=False):
+    # Input
+    paper_id: str
+    run_id: str
+    mode: str               # snap | lens | sphere | auto (input) ; mutated by classify_intent to snap|lens|sphere|qa
+    llm_model: str
+    language: str            # en | zh
+    user_question: str       # free-text question; required when mode == "auto"
+
+    # Pipeline progress
+    pdf_path: str
+    parse_id: str
+    output_dir: str
+    paper_ir_json: str      # serialized PaperIR
+    document_partitions_json: str  # serialized list[DocumentPartition]
+    supplementary_index_json: str  # serialized SupplementaryIndex
+    dify_sync_json: str     # serialized {"status": "...", "document_id": "...", "message": "..."}
+    analysis_dify_sync_json: str  # serialized {"status": "...", "document_id": "...", "message": "..."}
+    pub_rank_json: str      # serialized {"venue":"...","year":2024,"sci":"Q1","ccf":"A"}
+    detected_intent: str    # set by classify_intent — one of snap | lens | sphere | qa
+
+    # Output
+    final_markdown: str
+    final_json: str
+    persist_skipped: bool
+    auto_knowledge_cards_json: str
+    analysis_language: str   # language the subgraph natively produced final_markdown in;
+                             # when it equals `language`, translate_output is skipped
+    error: str
+
+    # Sphere internal state (debugging)
+    sphere_state_json: str
+
+    # Progress tracking
+    progress: list[dict[str, Any]]

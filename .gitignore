@@ -1,0 +1,105 @@
+# === Secrets & env ===
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+!.env.template
+!**/.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+backend/.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# === Node.js / Next.js ===
+node_modules/
+.next/
+frontend/.next/
+*.tsbuildinfo
+
+# === Docker persistent data ===
+docker-data/
+.local-dev-data/
+
+# === Backend runtime uploads and generated parsing data ===
+backend/data/
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === AI assistant / workspace metadata ===
+.cursor/
+.claude/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+
+# === Test artifacts ===
+test_doc/
+test_result/
+tmp/
+temp/
+
+# === Generated analysis exports (Insight Snap / Logic Lens markdown) ===
+*_lens.md
+*_snap.md
+*_sphere.md
+
+# === Cache databases ===
+rank_cache.sqlite3
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.db-wal
+*.db-shm
+*.db-journal
+
+# === Runtime data ===
+*.db
+*.sqlite
+
+# === Standalone tool packages (now inlined into backend/app/services/) ===
+/paper_search/
+/papersdownload/
+/PublicationRank/
+/paper_converter/
+
+# === Local third-party/runtime deployments ===
+/dify-rag/
+
+# === Private paper artifacts ===
+*.pdf
+*.zip
+
+# === Internal dev docs ===
+DEV_DOC/
+
+# === AI agent instructions & local scripts (internal) ===
+CLAUDE.md
+AGENTS.md
+test_ai_connection.py

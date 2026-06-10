@@ -1,0 +1,66 @@
+services:
+  dify-proxy:
+    build:
+      context: ./dify-proxy
+    container_name: ai4sec-dify-proxy
+    env_file: .env
+    ports:
+      - "${DIFY_PROXY_PORT}:3002"
+    restart: unless-stopped
+    networks:
+      - default
+      - dify_default
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE}
+    container_name: scholar-backend
+    env_file: .env
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS}
+    volumes:
+      - ./docker-data:/scholar/backend/data
+    ports:
+      - "${BACKEND_PORT}:8000"
+    restart: unless-stopped
+    depends_on:
+      - dify-proxy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, urllib.request; urllib.request.urlopen(os.environ['BACKEND_HEALTHCHECK_URL'])",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NODE_IMAGE: ${NODE_IMAGE}
+        BACKEND_URL: ${BACKEND_URL}
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL}
+    container_name: scholar-frontend
+    env_file: .env
+    environment:
+      - BACKEND_URL=${BACKEND_URL}
+      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
+    ports:
+      - "${FRONTEND_PORT}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  dify_default:
+    external: true
+    name: ${DIFY_DOCKER_NETWORK}

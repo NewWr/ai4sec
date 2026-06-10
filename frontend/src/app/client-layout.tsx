@@ -1,0 +1,65 @@
+"use client";
+
+import { LanguageProvider, LanguageToggle, useTranslation } from "@/lib/i18n";
+import type { ReactNode } from "react";
+import Image from "next/image";
+import { usePathname } from "next/navigation";
+
+function NavLink({ href, label }: { href: string; label: string }) {
+  const pathname = usePathname();
+  const active = pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
+  return (
+    <a
+      href={href}
+      className={`text-sm transition-colors ${
+        active
+          ? "text-foreground font-medium"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {label}
+    </a>
+  );
+}
+
+function NavBar() {
+  const { t } = useTranslation();
+
+  return (
+    <nav className="sticky top-0 z-40 h-14 border-b border-border bg-background/80 backdrop-blur-md">
+      <div className="flex h-full items-center gap-6 px-4 sm:px-6">
+        <a href="/" className="flex items-center gap-2.5 font-semibold tracking-tight">
+          <Image
+            src="/scholar.png"
+            alt="Scholar"
+            width={28}
+            height={28}
+            className="h-7 w-7 rounded-lg object-contain"
+            priority
+          />
+          <span className="text-[15px]">{t("nav.brand")}</span>
+        </a>
+        <div className="mx-1 hidden h-5 w-px bg-border sm:block" />
+        <NavLink href="/upload" label={t("nav.upload")} />
+        <NavLink href="/daily" label="每日推荐" />
+        <NavLink href="/papers" label={t("nav.papers")} />
+        <NavLink href="/knowledge" label="知识卡片" />
+        <NavLink href="/knowledge-spaces" label="知识库" />
+        <NavLink href="/translate" label={t("nav.translate")} />
+        <NavLink href="/health" label="维护" />
+        <NavLink href="/settings" label="设置" />
+        <div className="flex-1" />
+        <LanguageToggle />
+      </div>
+    </nav>
+  );
+}
+
+export default function ClientLayout({ children }: { children: ReactNode }) {
+  return (
+    <LanguageProvider>
+      <NavBar />
+      <main>{children}</main>
+    </LanguageProvider>
+  );
+}
