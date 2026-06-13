@@ -42,20 +42,31 @@ export default function RecentRuns({ refreshMs = 5000, historyLimit = 8 }: Props
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     const load = () => {
+      if (cancelled || inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
       listRecentRuns(20, false)
         .then((data) => {
           if (!cancelled) setRuns(data);
         })
         .catch(() => {
           if (!cancelled) setRuns([]);
+        })
+        .finally(() => {
+          inFlight = false;
         });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") load();
     };
     load();
     if (refreshMs <= 0) return;
     const id = setInterval(load, refreshMs);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       clearInterval(id);
     };
   }, [refreshMs]);

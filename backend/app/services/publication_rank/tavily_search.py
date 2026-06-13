@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.services.http_clients import get_default_http_client
 
 logger = logging.getLogger("scholar.tavily")
 
@@ -82,8 +83,8 @@ class TavilySearchClient:
         while True:
             attempt += 1
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(self.search_url, json=payload)
+                client = get_default_http_client()
+                resp = await client.post(self.search_url, json=payload, timeout=timeout)
                 if self._is_retryable(resp.status_code) and attempt <= self.max_retries:
                     delay = self._compute_delay(attempt)
                     logger.warning(

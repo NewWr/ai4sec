@@ -337,6 +337,7 @@ def score_paper(
     primary_category: str,
     topic: dict[str, Any],
     feedback_penalty: float = 0.0,
+    behavior_terms: list[str] | None = None,
     default_min_score: float = 0.68,
 ) -> ScoreResult:
     haystack = normalize_text(f"{title} {abstract}")
@@ -379,6 +380,23 @@ def score_paper(
     should_terms = [str(t) for t in topic.get("should") or []]
     matched_should = [term for term in should_terms if contains_term(haystack, term)]
     title_hits = [term for term in should_terms if contains_term(title_norm, term)]
+    behavior_candidates = []
+    seen_behavior_terms: set[str] = set()
+    for term in behavior_terms or []:
+        cleaned = normalize_text(str(term))
+        if not cleaned or cleaned in seen_behavior_terms:
+            continue
+        seen_behavior_terms.add(cleaned)
+        behavior_candidates.append(cleaned)
+        if len(behavior_candidates) >= 50:
+            break
+    matched_behavior_title = [term for term in behavior_candidates if contains_term(title_norm, term)]
+    matched_behavior_abstract = [
+        term
+        for term in behavior_candidates
+        if term not in matched_behavior_title and contains_term(haystack, term)
+    ]
+    matched_behavior = [*matched_behavior_title, *matched_behavior_abstract]
 
     category_score = 1.0 if category_ok or not allowed_categories else 0.0
     # `must.any` is a hard gate: satisfying one group is already strong evidence.
@@ -387,6 +405,10 @@ def score_paper(
     should_score = min(1.0, len(matched_should) / 3.0)
     abstract_focus_score = min(1.0, (len(title_hits) * 0.30) + (len(matched_should) * 0.12))
     feedback_score = max(-1.0, min(0.2, feedback_penalty))
+    behavior_score = min(
+        0.10,
+        (len(matched_behavior_title) * 0.04) + (len(matched_behavior_abstract) * 0.025),
+    )
 
     score = (
         category_score * 0.25
@@ -395,6 +417,7 @@ def score_paper(
         + abstract_focus_score * 0.15
         + 0.05
         + feedback_score
+        + behavior_score
     )
     score = max(0.0, min(1.0, score))
     min_score = float(topic.get("min_score") or default_min_score)
@@ -405,6 +428,8 @@ def score_paper(
         reason_parts.append("强条件 " + " / ".join("+".join(g) for g in matched_groups[:2]))
     if matched_should:
         reason_parts.append("相关词 " + ", ".join(matched_should[:5]))
+    if matched_behavior:
+        reason_parts.append("行为匹配 " + ", ".join(matched_behavior[:4]))
     if feedback_penalty < 0:
         reason_parts.append("历史反馈降权")
 
@@ -421,6 +446,8 @@ def score_paper(
             "should_score": should_score,
             "abstract_focus_score": abstract_focus_score,
             "feedback_score": feedback_score,
+            "behavior_score": behavior_score,
+            "matched_behavior": matched_behavior,
             "min_score": min_score,
         },
         reason="；".join(reason_parts) or "规则匹配",

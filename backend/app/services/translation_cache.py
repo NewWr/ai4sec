@@ -5,10 +5,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from app.config import get_settings
 from app.db import database as db
+from app.services.http_clients import get_default_http_client
 
 logger = logging.getLogger("scholar.translate_cache")
 
@@ -145,8 +144,8 @@ async def translate_text(
             "source_lang": _deepl_lang(source_lang, auto=True),
             "target_lang": _deepl_lang(target_lang),
         }
-        async with httpx.AsyncClient(timeout=float(settings.deeplx_timeout_seconds)) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+        client = get_default_http_client()
+        resp = await client.post(url, headers=headers, json=payload, timeout=float(settings.deeplx_timeout_seconds))
         resp.raise_for_status()
         translated = _extract_translation(resp.json())
         if not translated:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import hashlib
 import sqlite3
 import tempfile
@@ -71,6 +72,29 @@ class DailyRecommendationScoringTests(unittest.TestCase):
         )
         self.assertTrue(dino.keep)
 
+    def test_behavior_terms_can_promote_relevant_candidates(self) -> None:
+        from app.services.daily_recommendation_scoring import DEFAULT_TOPICS, score_paper
+        from app.services.recommendation_behavior import extract_behavior_terms
+
+        topic = next(t for t in DEFAULT_TOPICS if t["id"] == "clip_prompt_learning")
+        terms = extract_behavior_terms(
+            "Vision-Language Prompt Calibration for Medical Segmentation",
+            "CLIP prompt calibration and medical segmentation are active reading interests.",
+        )
+        result = score_paper(
+            title="Vision-Language Prompt Calibration",
+            abstract="A lightweight prompt method for medical segmentation and transfer.",
+            categories=["cs.CV"],
+            primary_category="cs.CV",
+            topic=topic,
+            behavior_terms=terms,
+        )
+
+        self.assertTrue(result.keep)
+        self.assertGreaterEqual(result.detail["behavior_score"], 0.1)
+        self.assertIn("prompt calibration", result.detail["matched_behavior"])
+        self.assertIn("行为匹配", result.reason)
+
 
 class DailyRecommendationSchedulerTests(unittest.TestCase):
     def test_next_refresh_at_uses_configured_timezone(self) -> None:
@@ -109,6 +133,10 @@ class DailyRecommendationApiTests(unittest.TestCase):
         self._client_cm = TestClient(app)
         self.client = self._client_cm.__enter__()
         self.db_file = Path(self._tmp.name) / "app.db"
+        from app.api import daily
+
+        daily._daily_refresh_jobs.clear()
+        daily._active_daily_refresh_job_id = ""
 
     def tearDown(self) -> None:
         self._client_cm.__exit__(None, None, None)
@@ -140,17 +168,48 @@ class DailyRecommendationApiTests(unittest.TestCase):
 
     def test_refresh_reports_arxiv_errors_without_500(self) -> None:
         with patch(
-            "app.services.daily_recommendations.search_arxiv",
+            "app.api.daily.refresh_daily_recommendations",
             new=AsyncMock(side_effect=RuntimeError("upstream 500")),
         ):
             resp = self.client.post("/api/daily/refresh", json={"date": "2026-06-07", "force": True})
 
         self.assertEqual(resp.status_code, 200, resp.text)
         data = resp.json()
-        self.assertEqual(data["message"], "refresh_failed")
-        self.assertEqual(data["fetched"], 0)
-        self.assertGreaterEqual(len(data["errors"]), 1)
-        self.assertIn("upstream 500", data["errors"][0]["error"])
+        self.assertTrue(data["job_id"])
+        self.assertIn(data["status"], {"started", "running"})
+
+        status = data
+        for _ in range(30):
+            status_resp = self.client.get(f"/api/daily/refresh/{data['job_id']}")
+            self.assertEqual(status_resp.status_code, 200, status_resp.text)
+            status = status_resp.json()
+            if status["status"] in {"done", "failed"}:
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("upstream 500", status["message"])
+        self.assertEqual(status["fetched"], 0)
+
+    def test_refresh_is_idempotent_while_job_running(self) -> None:
+        async def slow_refresh(**kwargs):
+            await __import__("asyncio").sleep(0.2)
+            return {"date": kwargs.get("fetched_date") or "", "fetched": 0, "inserted_or_updated": 0, "kept": 0, "skipped": 0, "message": "ok", "errors": []}
+
+        with patch("app.api.daily.refresh_daily_recommendations", new=AsyncMock(side_effect=slow_refresh)):
+            first = self.client.post("/api/daily/refresh", json={"date": "2026-06-07", "force": True})
+            second = self.client.post("/api/daily/refresh", json={"date": "2026-06-07", "force": True})
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(first.json()["job_id"], second.json()["job_id"])
+        job_id = first.json()["job_id"]
+        for _ in range(30):
+            status = self.client.get(f"/api/daily/refresh/{job_id}")
+            self.assertEqual(status.status_code, 200, status.text)
+            if status.json()["status"] in {"done", "failed"}:
+                break
+            time.sleep(0.05)
 
     def test_list_items_defaults_to_all_dates_desc_with_pagination(self) -> None:
         con = sqlite3.connect(self.db_file)
@@ -211,6 +270,146 @@ class DailyRecommendationApiTests(unittest.TestCase):
         self.assertEqual(filtered_data["date"], "2026-06-07")
         self.assertEqual(filtered_data["total"], 4)
         self.assertTrue(all(item["fetched_date"] == "2026-06-07" for item in filtered_data["items"]))
+
+    def test_refresh_uses_local_behavior_profile_in_score_detail(self) -> None:
+        from app.services.arxiv_client import ArxivPaper
+
+        con = sqlite3.connect(self.db_file)
+        con.execute(
+            """
+            INSERT INTO papers (
+                paper_id, file_path, title, reading_status, decision, citation_key, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                "paper-behavior",
+                "papers/paper-behavior/original.pdf",
+                "Vision-Language Prompt Calibration for Medical Segmentation",
+                "read",
+                "must_read",
+                "PromptCalibration2026",
+            ),
+        )
+        con.commit()
+        con.close()
+
+        candidate = ArxivPaper(
+            arxiv_id="2601.00003",
+            title="Vision-Language Prompt Calibration",
+            abstract="A lightweight prompt method for medical segmentation and transfer.",
+            authors=["A. Author"],
+            primary_category="cs.CV",
+            categories=["cs.CV"],
+            published_at="2026-06-07",
+            updated_at="2026-06-07",
+            arxiv_url="https://arxiv.org/abs/2601.00003",
+            pdf_url="https://arxiv.org/pdf/2601.00003",
+        )
+
+        with patch("app.services.daily_recommendations.search_arxiv", new=AsyncMock(return_value=[candidate])):
+            resp = self.client.post(
+                "/api/daily/refresh",
+                json={"date": "2026-06-07", "topic_id": "clip_prompt_learning", "force": True},
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            job_id = resp.json()["job_id"]
+            status = resp.json()
+            for _ in range(30):
+                status_resp = self.client.get(f"/api/daily/refresh/{job_id}")
+                self.assertEqual(status_resp.status_code, 200, status_resp.text)
+                status = status_resp.json()
+                if status["status"] in {"done", "failed"}:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(status["status"], "done")
+        self.assertEqual(status["kept"], 1)
+
+        con = sqlite3.connect(self.db_file)
+        row = con.execute(
+            """
+            SELECT score, score_detail_json, reason
+              FROM daily_recommendation_items
+             WHERE arxiv_id = '2601.00003'
+            """
+        ).fetchone()
+        con.close()
+
+        self.assertIsNotNone(row)
+        detail = __import__("json").loads(row[1])
+        self.assertGreaterEqual(detail["behavior_score"], 0.1)
+        self.assertIn("prompt calibration", detail["matched_behavior"])
+        self.assertIn("行为匹配", row[2])
+
+    def test_refresh_marks_existing_gap_hits(self) -> None:
+        from app.services.arxiv_client import ArxivPaper
+
+        con = sqlite3.connect(self.db_file)
+        con.execute(
+            """
+            INSERT INTO research_gaps (
+                gap_id, title, hypothesis, description, minimum_experiment,
+                novelty_score, feasibility_score, evidence_strength, status
+            ) VALUES (?, ?, ?, ?, ?, 0.8, 0.7, 0.9, 'candidate')
+            """,
+            (
+                "gap-prompt-calibration",
+                "Prompt calibration for medical segmentation",
+                "Vision-language prompt calibration may improve medical segmentation transfer.",
+                "Existing CLIP prompt learning leaves medical segmentation calibration under-tested.",
+                "Evaluate prompt calibration on medical segmentation datasets.",
+            ),
+        )
+        con.commit()
+        con.close()
+
+        candidate = ArxivPaper(
+            arxiv_id="2601.00004",
+            title="Prompt Calibration for Medical Segmentation",
+            abstract="We evaluate vision-language prompt calibration for medical segmentation transfer.",
+            authors=["A. Author"],
+            primary_category="cs.CV",
+            categories=["cs.CV"],
+            published_at="2026-06-07",
+            updated_at="2026-06-07",
+            arxiv_url="https://arxiv.org/abs/2601.00004",
+            pdf_url="https://arxiv.org/pdf/2601.00004",
+        )
+
+        with patch("app.services.daily_recommendations.search_arxiv", new=AsyncMock(return_value=[candidate])):
+            resp = self.client.post(
+                "/api/daily/refresh",
+                json={"date": "2026-06-07", "topic_id": "clip_prompt_learning", "force": True},
+            )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            job_id = resp.json()["job_id"]
+            status = resp.json()
+            for _ in range(30):
+                status_resp = self.client.get(f"/api/daily/refresh/{job_id}")
+                self.assertEqual(status_resp.status_code, 200, status_resp.text)
+                status = status_resp.json()
+                if status["status"] in {"done", "failed"}:
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(status["status"], "done")
+        con = sqlite3.connect(self.db_file)
+        item_row = con.execute(
+            """
+            SELECT score_detail_json, reason
+              FROM daily_recommendation_items
+             WHERE arxiv_id = '2601.00004'
+            """
+        ).fetchone()
+        gap_row = con.execute(
+            "SELECT hit_by_paper_ids, coverage_status FROM research_gaps WHERE gap_id = 'gap-prompt-calibration'"
+        ).fetchone()
+        con.close()
+
+        detail = __import__("json").loads(item_row[0])
+        self.assertEqual(detail["matched_gaps"][0]["gap_id"], "gap-prompt-calibration")
+        self.assertIn("命中想法", item_row[1])
+        self.assertIn("2601.00004", __import__("json").loads(gap_row[0]))
+        self.assertEqual(gap_row[1], "partially_covered")
 
     def test_feedback_updates_candidate_without_creating_paper(self) -> None:
         con = sqlite3.connect(self.db_file)

@@ -123,6 +123,7 @@ class PaperLibraryApiTests(unittest.TestCase):
             self.assertIn("rule_id", edge)
             self.assertIn("positive_checks", edge)
             self.assertIn("negative_checks", edge)
+            self.assertIn(edge["status"], {"verified", "needs_more_evidence", "unverified", "confirmed"})
 
     def test_get_sync_status_returns_paper_and_analysis_rows(self) -> None:
         resp = self.client.get("/api/papers/paper1/sync-status")

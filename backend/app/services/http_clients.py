@@ -27,7 +27,11 @@ async def close_http_clients() -> None:
     global _dify_client, _llm_client, _default_client
     for client in (_dify_client, _llm_client, _default_client):
         if client is not None:
-            await client.aclose()
+            try:
+                await client.aclose()
+            except RuntimeError as exc:
+                if "Event loop is closed" not in str(exc):
+                    raise
     _dify_client = None
     _llm_client = None
     _default_client = None

@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 export type Locale = "en" | "zh";
@@ -199,6 +199,9 @@ const translations: Record<Locale, Record<string, string>> = {
     "library.method.semantic_search": "Semantic",
     "library.method.hybrid_search": "Hybrid",
     "library.method_slow_hint": "Semantic / hybrid search is higher quality but slow (may take 30s+).",
+    "library.ask_scope_label": "Scope",
+    "library.ask_scope.hybrid": "Local graph + Dify",
+    "library.ask_scope.graph_only": "Local graph only",
     "library.search_placeholder": "Search the corpus…",
     "library.ask_placeholder": "Ask a question across all your papers…",
     "library.run_search": "Search",
@@ -412,6 +415,9 @@ const translations: Record<Locale, Record<string, string>> = {
     "library.method.semantic_search": "语义",
     "library.method.hybrid_search": "混合",
     "library.method_slow_hint": "语义/混合检索质量更高但较慢（可能 30 秒以上）。",
+    "library.ask_scope_label": "范围",
+    "library.ask_scope.hybrid": "本地图谱 + Dify",
+    "library.ask_scope.graph_only": "仅本地图谱",
     "library.search_placeholder": "检索语料库…",
     "library.ask_placeholder": "向你的全部论文提问…",
     "library.run_search": "检索",
@@ -476,9 +482,13 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     },
     [locale],
   );
+  const value = useMemo(
+    () => ({ locale, setLocale, t }),
+    [locale, setLocale, t],
+  );
 
   return (
-    <LanguageContext.Provider value={{ locale, setLocale, t }}>
+    <LanguageContext.Provider value={value}>
       {children}
     </LanguageContext.Provider>
   );

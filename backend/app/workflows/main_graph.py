@@ -15,8 +15,9 @@ from app.config import get_settings
 from app.db import database as db
 from app.services import mineru_adapter
 from app.services.dify_sync import sync_analysis_to_dify, sync_paper_ir_to_dify
+from app.services.http_clients import get_default_http_client
 from app.services.knowledge_spaces import analysis_dataset_for_run, source_dataset_for_paper
-from app.services.paper_ir import build_and_store_paper_ir
+from app.services.paper_ir import build_and_store_paper_ir, clear_cached_paper_ir, get_cached_paper_ir
 from app.services.paper_collections import refresh_paper_display_cache
 from app.services.paper_partitioner import partition_paper_ir, partitions_to_jsonable
 from app.services.supplementary_indexer import build_supplementary_index
@@ -146,9 +147,7 @@ async def detect_document_parts(state: MainGraphState) -> dict[str, Any]:
 
     t0 = time.perf_counter()
     try:
-        from app.models.paper_ir import PaperIR
-
-        paper_ir = PaperIR.model_validate_json(state.get("paper_ir_json") or "")
+        paper_ir = get_cached_paper_ir(state)
         partitions = partition_paper_ir(paper_ir)
         partitions_json = json.dumps(partitions_to_jsonable(partitions), ensure_ascii=False)
         supplementary_index = None
@@ -205,12 +204,10 @@ async def sync_dify_library(state: MainGraphState) -> dict[str, Any]:
     t0 = time.perf_counter()
     paper_id = state["paper_id"]
     try:
-        from app.models.paper_ir import PaperIR
-
         paper_ir_json = state.get("paper_ir_json") or ""
         if not paper_ir_json:
             raise ValueError("paper_ir_json is empty")
-        paper_ir = PaperIR.model_validate_json(paper_ir_json)
+        paper_ir = get_cached_paper_ir(state)
         dataset_id = await source_dataset_for_paper(paper_id)
         result = await sync_paper_ir_to_dify(paper_id, paper_ir, dataset_id=dataset_id)
         logger.info(
@@ -251,11 +248,9 @@ _DOI_RE = re.compile(r"\b(10\.\d{4,9}/[^\s,;\"')\]>]+)", re.ASCII)
 _ARXIV_RE = re.compile(r"arXiv[:\s]*(\d{4}\.\d{4,5}(?:v\d+)?)", re.IGNORECASE)
 
 
-async def _extract_doi_from_ir(paper_ir_json: str) -> str:
+async def _extract_doi_from_ir(state: MainGraphState) -> str:
     """Extract DOI from paper text blocks (prefer first few pages)."""
-    from app.models.paper_ir import PaperIR
-
-    ir = PaperIR.model_validate_json(paper_ir_json)
+    ir = get_cached_paper_ir(state)
     # Search text blocks from early pages first
     for block in sorted(ir.blocks, key=lambda b: (b.page_idx, b.order_idx)):
         if block.page_idx > 3:
@@ -273,11 +268,9 @@ async def _extract_doi_from_ir(paper_ir_json: str) -> str:
     return ""
 
 
-async def _extract_arxiv_id_from_ir(paper_ir_json: str) -> str:
+async def _extract_arxiv_id_from_ir(state: MainGraphState) -> str:
     """Extract arXiv ID (e.g. 2301.12345) from paper text blocks."""
-    from app.models.paper_ir import PaperIR
-
-    ir = PaperIR.model_validate_json(paper_ir_json)
+    ir = get_cached_paper_ir(state)
     for block in sorted(ir.blocks, key=lambda b: (b.page_idx, b.order_idx)):
         if block.page_idx > 3:
             break
@@ -298,10 +291,10 @@ async def _crossref_lookup(doi: str) -> dict[str, Any]:
     settings = get_settings()
     url = f"{settings.crossref_api_base.rstrip('/')}/works/{doi}"
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers={"User-Agent": "ScholarApp/1.0 (mailto:scholar@example.com)"})
-            resp.raise_for_status()
-            data = resp.json().get("message", {})
+        client = get_default_http_client()
+        resp = await client.get(url, headers={"User-Agent": "ScholarApp/1.0 (mailto:scholar@example.com)"}, timeout=15.0)
+        resp.raise_for_status()
+        data = resp.json().get("message", {})
 
         venue = ""
         container = data.get("container-title", [])
@@ -339,44 +332,47 @@ async def _s2_lookup(doi: str = "", arxiv_id: str = "", title: str = "") -> dict
     base_url = settings.semantic_scholar_api_base.rstrip("/")
     headers = {"x-api-key": settings.semantic_scholar_api_key} if settings.semantic_scholar_api_key else {}
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        if doi:
-            try:
-                resp = await client.get(
-                    f"{base_url}/graph/v1/paper/DOI:{doi}",
-                    params={"fields": fields},
-                    headers=headers,
-                )
-                if resp.status_code == 200:
-                    return _parse_s2_response(resp.json())
-            except Exception as e:
-                logger.warning("S2 DOI lookup failed: %s", e)
+    client = get_default_http_client()
+    if doi:
+        try:
+            resp = await client.get(
+                f"{base_url}/graph/v1/paper/DOI:{doi}",
+                params={"fields": fields},
+                headers=headers,
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                return _parse_s2_response(resp.json())
+        except Exception as e:
+            logger.warning("S2 DOI lookup failed: %s", e)
 
-        if arxiv_id:
-            try:
-                resp = await client.get(
-                    f"{base_url}/graph/v1/paper/ARXIV:{arxiv_id}",
-                    params={"fields": fields},
-                    headers=headers,
-                )
-                if resp.status_code == 200:
-                    return _parse_s2_response(resp.json())
-            except Exception as e:
-                logger.warning("S2 arXiv lookup failed: %s", e)
+    if arxiv_id:
+        try:
+            resp = await client.get(
+                f"{base_url}/graph/v1/paper/ARXIV:{arxiv_id}",
+                params={"fields": fields},
+                headers=headers,
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                return _parse_s2_response(resp.json())
+        except Exception as e:
+            logger.warning("S2 arXiv lookup failed: %s", e)
 
-        if title:
-            try:
-                resp = await client.get(
-                    f"{base_url}/graph/v1/paper/search/match",
-                    params={"query": title[:200], "fields": fields},
-                    headers=headers,
-                )
-                if resp.status_code == 200:
-                    matches = resp.json().get("data", [])
-                    if matches:
-                        return _parse_s2_response(matches[0])
-            except Exception as e:
-                logger.warning("S2 title match failed: %s", e)
+    if title:
+        try:
+            resp = await client.get(
+                f"{base_url}/graph/v1/paper/search/match",
+                params={"query": title[:200], "fields": fields},
+                headers=headers,
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                matches = resp.json().get("data", [])
+                if matches:
+                    return _parse_s2_response(matches[0])
+        except Exception as e:
+            logger.warning("S2 title match failed: %s", e)
 
     return {}
 
@@ -425,9 +421,9 @@ async def enrich_metadata(state: MainGraphState) -> dict[str, Any]:
         if existing and existing.get("doi"):
             doi = existing["doi"]
         if not doi and state.get("paper_ir_json"):
-            doi = await _extract_doi_from_ir(state["paper_ir_json"])
+            doi = await _extract_doi_from_ir(state)
         if state.get("paper_ir_json"):
-            arxiv_id = await _extract_arxiv_id_from_ir(state["paper_ir_json"])
+            arxiv_id = await _extract_arxiv_id_from_ir(state)
         logger.info("[%s] enrich_metadata: DOI=%s arXiv=%s", paper_id, doi or "-", arxiv_id or "-")
 
         # 3. Multi-source venue + year lookup
@@ -452,9 +448,7 @@ async def enrich_metadata(state: MainGraphState) -> dict[str, Any]:
             if not venue:
                 title = ""
                 if state.get("paper_ir_json"):
-                    from app.models.paper_ir import PaperIR
-                    ir = PaperIR.model_validate_json(state["paper_ir_json"])
-                    title = ir.title
+                    title = get_cached_paper_ir(state).title
                 s2 = await _s2_lookup(doi=doi, arxiv_id=arxiv_id, title=title)
                 if s2.get("venue"):
                     venue = s2["venue"]
@@ -659,11 +653,9 @@ async def persist_output(state: MainGraphState) -> dict[str, Any]:
         (final_mode, detected_intent, run_id),
     )
     try:
-        from app.models.paper_ir import PaperIR
-
         paper_ir_json = state.get("paper_ir_json") or ""
         if paper_ir_json:
-            await refresh_paper_display_cache(paper_id, PaperIR.model_validate_json(paper_ir_json))
+            await refresh_paper_display_cache(paper_id, get_cached_paper_ir(state))
     except Exception as e:
         logger.warning("[%s] persist_output: display cache refresh failed — %s", paper_id, e)
 
@@ -683,6 +675,7 @@ async def persist_output(state: MainGraphState) -> dict[str, Any]:
                 "message": analysis_sync.message,
             }
         ]
+    clear_cached_paper_ir(run_id)
     return {"progress": progress + [{"step": "persist_output", "status": "done"}]}
 
 

@@ -79,6 +79,14 @@ export default function HealthPage() {
             <Metric label="未解决问题" value={health.unresolved_issues} />
             <Metric label="同步失败" value={health.sync_failed_papers} />
             <Metric label="待重建索引" value={health.stale_index_documents} />
+            <Metric label="无证据 verified" value={health.verified_cards_without_evidence} />
+            <Metric label="草稿积压" value={health.draft_backlog_count} />
+            <Metric label="弱综合卡" value={health.weak_synthesis_cards} />
+            <Metric label="Gap 缺实验" value={health.gaps_missing_support_or_experiment} />
+            <Metric label="写作缺 trace" value={health.writing_snippets_missing_trace} />
+            <Metric label="孤立 evidence" value={health.isolated_evidence_count} />
+            <Metric label="本地问答命中率" value={`${Math.round(health.local_qa_graph_hit_ratio * 100)}%`} />
+            <Metric label="导出缺引用率" value={`${Math.round(health.export_citation_missing_rate * 100)}%`} />
           </section>
 
           <section className="grid gap-3 lg:grid-cols-2">
@@ -169,7 +177,7 @@ function actionLabel(issueType: string): string {
   return "查看";
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="text-2xl font-semibold">{value}</div>

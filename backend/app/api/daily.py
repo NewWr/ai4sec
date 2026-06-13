@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 
 from app.api.runs import start_background_run
@@ -31,6 +36,40 @@ from app.services.knowledge_spaces import (
 )
 
 router = APIRouter(tags=["daily"])
+
+_daily_refresh_jobs: dict[str, dict[str, Any]] = {}
+_active_daily_refresh_job_id = ""
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _job_public(job: dict[str, Any]) -> dict[str, Any]:
+    return dict(job)
+
+
+async def _run_refresh_job(job_id: str, body: DailyRecommendationRefreshRequest, refresh_func=refresh_daily_recommendations) -> None:
+    global _active_daily_refresh_job_id
+    job = _daily_refresh_jobs[job_id]
+    job["status"] = "running"
+    job["started_at"] = _now_iso()
+    try:
+        result = await refresh_func(
+            fetched_date=body.date,
+            topic_id=body.topic_id,
+            force=body.force,
+        )
+        job.update(result)
+        job["status"] = "done"
+        job["message"] = str(result.get("message") or "ok")
+    except Exception as exc:
+        job["status"] = "failed"
+        job["message"] = str(exc)
+    finally:
+        job["finished_at"] = _now_iso()
+        if _active_daily_refresh_job_id == job_id:
+            _active_daily_refresh_job_id = ""
 
 
 @router.get("/daily/topics", response_model=list[DailyRecommendationTopicResponse])
@@ -67,16 +106,38 @@ async def get_daily_items(
 @limiter.limit("5/minute")
 async def refresh_daily(request: Request, body: DailyRecommendationRefreshRequest):
     del request
-    try:
-        return DailyRecommendationRefreshResponse(
-            **await refresh_daily_recommendations(
-                fetched_date=body.date,
-                topic_id=body.topic_id,
-                force=body.force,
-            )
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    global _active_daily_refresh_job_id
+    if _active_daily_refresh_job_id:
+        return DailyRecommendationRefreshResponse(**_job_public(_daily_refresh_jobs[_active_daily_refresh_job_id]))
+
+    job_id = uuid.uuid4().hex[:16]
+    job = {
+        "job_id": job_id,
+        "status": "started",
+        "date": body.date,
+        "fetched": 0,
+        "inserted_or_updated": 0,
+        "kept": 0,
+        "skipped": 0,
+        "message": "started",
+        "errors": [],
+        "started_at": _now_iso(),
+        "finished_at": "",
+    }
+    _daily_refresh_jobs[job_id] = job
+    _active_daily_refresh_job_id = job_id
+    asyncio.create_task(_run_refresh_job(job_id, body, refresh_daily_recommendations))
+    return DailyRecommendationRefreshResponse(**_job_public(job))
+
+
+@router.get("/daily/refresh/{job_id}", response_model=DailyRecommendationRefreshResponse)
+@limiter.limit("30/minute")
+async def get_refresh_status(request: Request, job_id: str):
+    del request
+    job = _daily_refresh_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Refresh job not found")
+    return DailyRecommendationRefreshResponse(**_job_public(job))
 
 
 @router.post("/daily/items/{item_id}/feedback", response_model=DailyRecommendationItemResponse)

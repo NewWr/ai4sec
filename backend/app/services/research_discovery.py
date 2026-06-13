@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from app.config import get_settings
 from app.db import database as db
 from app.models.schemas import (
     DiscoveryEdgeResponse,
@@ -20,12 +22,19 @@ from app.models.schemas import (
     PapersDiscoveryResponse,
 )
 from app.services.translation_cache import translate_text
+from app.services import evidence_store
+from app.services import knowledge_synthesis
+from app.services.llm_runtime_config import get_llm_runtime_config
+from app.services.llm_service import get_llm_service
 
 
-DISCOVERY_VERSION = 1
+DISCOVERY_VERSION = 2
 EXTRACTOR = "rule_v1"
+VERIFIER_VERSION = "rule_verifier_v1"
+LLM_VERIFIER_VERSION = "llm_relation_verifier_v1"
 PROMPT_VERSION = "none"
 MODEL_VERSION = "none"
+logger = logging.getLogger("scholar.research_discovery")
 
 _DISPLAY_LABELS = {
     "uses_same_dataset": "使用相同数据集",
@@ -69,6 +78,27 @@ _DISPLAY_LABELS = {
     "promoted_to_idea": "已提升为想法",
     "promoted to idea": "已提升为想法",
     "same metric/problem with negative result": "相同指标或问题下存在负向结果",
+    "verifier: source and target evidence are present": "验证：源证据与目标证据均存在",
+    "verifier: source and target are distinct papers": "验证：源论文与目标论文不同",
+    "verifier: exact dataset label match": "验证：数据集标签精确匹配",
+    "verifier: shared problem taxonomy": "验证：研究问题分类一致",
+    "verifier: shared method family": "验证：方法族一致",
+    "verifier: relation is a transfer hypothesis, not direct evidence of feasibility": "验证：该关系是迁移假设，不直接证明可行性",
+    "verifier: same task/problem and metric evidence found": "验证：存在相同任务/问题与指标证据",
+    "verifier: result and claim evidence have opposing polarity": "验证：结果与主张存在方向差异",
+    "verifier: shared dataset evidence found": "验证：存在共享数据集证据",
+    "verifier: missing source or target evidence": "验证：缺少源证据或目标证据",
+    "verifier: dataset labels diverge": "验证：数据集标签不一致",
+    "verifier: problem evidence not aligned": "验证：研究问题证据未对齐",
+    "verifier: method family not aligned": "验证：方法族未对齐",
+    "verifier: transfer feasibility is not established": "验证：迁移可行性尚未成立",
+    "verifier: conflict lacks same dataset support": "验证：冲突缺少相同数据集支撑",
+    "verifier: dataset setting not matched": "验证：数据集设定未匹配",
+    "verifier: method setting not matched": "验证：方法设定未匹配",
+    "llm: relation accepted": "LLM：关系成立",
+    "llm: relation needs more evidence": "LLM：需要更多证据",
+    "llm: relation rejected": "LLM：关系不成立",
+    "llm: verifier failed; kept rule verifier result": "LLM：验证失败，保留规则验证结果",
     "Review evidence objects first, then compare relation checks and gap counter-evidence.": "先查看证据对象，再对比关系检查和反向证据。",
     "Evaluate method transfer across tasks": "评估方法跨任务迁移",
     "Resolve limitation": "解决局限",
@@ -233,7 +263,27 @@ def _loads_list(value: str | None) -> list[str]:
         data = json.loads(value)
     except Exception:
         return []
+    return [str(item) for item in data] if isinstance(data, list) else []
+
+
+def _loads_any_list(value: str | None) -> list[Any]:
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+    except Exception:
+        return []
     return data if isinstance(data, list) else []
+
+
+def _loads_dict(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        data = json.loads(value)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _hash(parts: list[str]) -> str:
@@ -265,6 +315,17 @@ def _gap_id(title: str, evidence_ids: list[str]) -> str:
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _append_history(raw: Any, entry: dict[str, Any], *, limit: int = 80) -> str:
+    try:
+        history = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        if not isinstance(history, list):
+            history = []
+    except Exception:
+        history = []
+    history.append(entry)
+    return _json(history[-limit:])
 
 
 def _quote(text: str, max_len: int = 420) -> str:
@@ -338,6 +399,60 @@ async def _load_rows(limit: int) -> list[dict[str, Any]]:
         """,
         (limit,),
     )
+
+
+async def _load_rows_for_papers(paper_ids: list[str]) -> list[dict[str, Any]]:
+    paper_ids = [paper_id for paper_id in dict.fromkeys(str(pid) for pid in paper_ids if pid)]
+    if not paper_ids:
+        return []
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = await db.fetch_all(
+        f"""
+        SELECT
+            p.paper_id,
+            COALESCE(p.title, '') AS title,
+            COALESCE(p.venue, '') AS venue,
+            COALESCE(p.year, 0) AS year,
+            COALESCE(mp.status, '') AS parse_status,
+            COALESCE(ds.status, '') AS dify_status,
+            COALESCE(lr.status, '') AS latest_run_status
+          FROM papers p
+          LEFT JOIN (
+            SELECT
+                paper_id,
+                CASE
+                    WHEN SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) > 0 THEN 'done'
+                    ELSE MAX(status)
+                END AS status
+              FROM mineru_parses
+             GROUP BY paper_id
+          ) mp ON mp.paper_id = p.paper_id
+          LEFT JOIN (
+            SELECT
+                paper_id,
+                CASE
+                    WHEN SUM(CASE WHEN status = 'synced' THEN 1 ELSE 0 END) > 0 THEN 'synced'
+                    ELSE MAX(status)
+                END AS status
+              FROM dify_syncs
+             GROUP BY paper_id
+          ) ds ON ds.paper_id = p.paper_id
+          LEFT JOIN (
+            SELECT r1.paper_id, r1.status
+              FROM runs r1
+              JOIN (
+                SELECT paper_id, MAX(started_at) AS max_started_at
+                  FROM runs
+                 GROUP BY paper_id
+              ) rx ON rx.paper_id = r1.paper_id AND rx.max_started_at = r1.started_at
+          ) lr ON lr.paper_id = p.paper_id
+         WHERE p.paper_id IN ({placeholders})
+         ORDER BY p.created_at DESC
+        """,
+        tuple(paper_ids),
+    )
+    row_by_id = {str(row.get("paper_id") or ""): row for row in rows}
+    return [row_by_id[paper_id] for paper_id in paper_ids if paper_id in row_by_id]
 
 
 async def _load_blocks(paper_ids: list[str]) -> list[dict[str, Any]]:
@@ -440,52 +555,31 @@ def _compact_drafts(drafts: list[EvidenceDraft]) -> list[EvidenceDraft]:
 async def _upsert_evidence(drafts: list[EvidenceDraft]) -> None:
     if not drafts:
         return
-    params: list[tuple[Any, ...]] = []
+    rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for draft in drafts:
-        evidence_id = _evidence_id(draft)
-        if evidence_id in seen:
+        eid = _evidence_id(draft)
+        if eid in seen:
             continue
-        seen.add(evidence_id)
-        params.append(
-            (
-                evidence_id,
-                draft.evidence_type,
-                draft.paper_id,
-                draft.block_id,
-                draft.page,
-                draft.quote,
-                draft.normalized_label,
-                draft.taxonomy_path,
-                draft.confidence,
-                EXTRACTOR,
-                MODEL_VERSION,
-                PROMPT_VERSION,
-                "unverified",
-                "[]",
-                _fingerprint(draft),
-                DISCOVERY_VERSION,
-            )
+        seen.add(eid)
+        rows.append(
+            {
+                "evidence_id": eid,
+                "evidence_type": draft.evidence_type,
+                "paper_id": draft.paper_id,
+                "block_id": draft.block_id,
+                "page": draft.page,
+                "quote": draft.quote,
+                "normalized_label": draft.normalized_label,
+                "taxonomy_path": draft.taxonomy_path,
+                "confidence": draft.confidence,
+                "extractor": EXTRACTOR,
+                "model_version": MODEL_VERSION,
+                "prompt_version": PROMPT_VERSION,
+                "source_hash": _fingerprint(draft),
+            }
         )
-    await db.execute_many(
-        """
-        INSERT INTO research_evidence_items (
-            evidence_id, evidence_type, paper_id, block_id, page, quote,
-            normalized_label, taxonomy_path, confidence, extractor, model_version,
-            prompt_version, status, revision_history, source_hash, evidence_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(evidence_id) DO UPDATE SET
-            quote = excluded.quote,
-            normalized_label = excluded.normalized_label,
-            taxonomy_path = excluded.taxonomy_path,
-            confidence = excluded.confidence,
-            source_hash = excluded.source_hash,
-            evidence_version = excluded.evidence_version,
-            updated_at = datetime('now')
-        WHERE research_evidence_items.status != 'rejected'
-        """,
-        params,
-    )
+    await evidence_store.upsert_evidence_many(rows)
 
 
 async def _load_evidence(paper_ids: list[str]) -> list[dict[str, Any]]:
@@ -494,11 +588,14 @@ async def _load_evidence(paper_ids: list[str]) -> list[dict[str, Any]]:
     placeholders = ",".join("?" for _ in paper_ids)
     return await db.fetch_all(
         f"""
-        SELECT *
-          FROM research_evidence_items
-         WHERE paper_id IN ({placeholders})
-           AND status != 'rejected'
-         ORDER BY paper_id, evidence_type, confidence DESC, page ASC
+        SELECT
+            rei.*,
+            COALESCE(b.text, '') AS full_block_text
+          FROM research_evidence_items rei
+          LEFT JOIN blocks b ON b.block_id = rei.block_id AND b.paper_id = rei.paper_id
+         WHERE rei.paper_id IN ({placeholders})
+           AND rei.status != 'rejected'
+         ORDER BY rei.paper_id, rei.evidence_type, rei.confidence DESC, rei.page ASC
         """,
         tuple(paper_ids),
     )
@@ -530,6 +627,21 @@ async def _clear_auto_discovery(paper_ids: list[str]) -> None:
         DELETE FROM research_gaps
          WHERE status = 'candidate'
         """
+    )
+
+
+async def _clear_auto_relations_for_scope(paper_ids: list[str]) -> None:
+    if not paper_ids:
+        return
+    placeholders = ",".join("?" for _ in paper_ids)
+    await db.execute(
+        f"""
+        DELETE FROM research_relation_edges
+         WHERE (source_paper_id IN ({placeholders}) OR target_paper_id IN ({placeholders}))
+           AND status IN ('unverified', 'needs_more_evidence')
+           AND rule_id LIKE 'rule_%'
+        """,
+        tuple(paper_ids + paper_ids),
     )
 
 
@@ -567,8 +679,396 @@ def _same_label_pairs(left: dict[str, list[dict[str, Any]]], right: dict[str, li
     return out
 
 
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _evidence_for_ids(evidence_by_id: dict[str, dict[str, Any]], ids: list[str], evidence_type: str = "") -> list[dict[str, Any]]:
+    items = [evidence_by_id[eid] for eid in ids if eid in evidence_by_id]
+    if evidence_type:
+        items = [item for item in items if str(item.get("evidence_type") or "") == evidence_type]
+    return items
+
+
+def _evidence_id_list(items: list[dict[str, Any]]) -> list[str]:
+    return _unique([str(item.get("evidence_id") or "") for item in items])
+
+
+def _selected_evidence_types(evidence_by_id: dict[str, dict[str, Any]], ids: list[str]) -> set[str]:
+    return {
+        str(item.get("evidence_type") or "")
+        for item in _evidence_for_ids(evidence_by_id, ids)
+        if item.get("evidence_type")
+    }
+
+
+def _comparability_schema(
+    *,
+    relation_type: str,
+    shared_task: bool = False,
+    shared_dataset: bool = False,
+    shared_metric: bool = False,
+    shared_setting: bool = False,
+    claim_direction: str = "unknown",
+    verdict: str = "needs_more_evidence",
+) -> dict[str, Any]:
+    missing: list[str] = []
+    if relation_type in {"same_problem", "conflicting_claim"} and not shared_task:
+        missing.append("task")
+    if relation_type in {"uses_same_dataset", "conflicting_claim"} and not shared_dataset:
+        missing.append("dataset")
+    if relation_type == "conflicting_claim" and not shared_metric:
+        missing.append("metric")
+    if relation_type in {"conflicting_claim", "method_variant"} and not shared_setting:
+        missing.append("setting")
+    return {
+        "task": "matched" if shared_task else "missing",
+        "dataset": "matched" if shared_dataset else "missing",
+        "metric": "matched" if shared_metric else "missing",
+        "setting": "matched" if shared_setting else "missing",
+        "claim_direction": claim_direction,
+        "missing": missing,
+        "verdict": verdict if not missing else "needs_more_evidence",
+    }
+
+
+def _setting_counter_ids(
+    left: dict[str, list[dict[str, Any]]],
+    right: dict[str, list[dict[str, Any]]],
+    evidence_type: str,
+    *,
+    shared: bool,
+) -> list[str]:
+    if shared:
+        return []
+    return _evidence_id_list((left.get(evidence_type, [])[:2] + right.get(evidence_type, [])[:2])[:4])
+
+
+def _evidence_excerpt(evidence_by_id: dict[str, dict[str, Any]], ids: list[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "evidence_id": eid,
+            "type": str(item.get("evidence_type") or ""),
+            "paper_id": str(item.get("paper_id") or ""),
+            "label": str(item.get("normalized_label") or ""),
+            "page": int(item.get("page") or 0),
+            "quote": str(item.get("quote") or "")[:500],
+        }
+        for eid in ids
+        if (item := evidence_by_id.get(eid))
+    ]
+
+
+def _verify_relation_candidate(
+    row: dict[str, Any],
+    grouped: dict[str, dict[str, list[dict[str, Any]]]],
+    evidence_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    next_row = dict(row)
+    relation_type = str(row.get("relation_type") or "")
+    source_paper_id = str(row.get("source_paper_id") or "")
+    target_paper_id = str(row.get("target_paper_id") or "")
+    source_ids = [str(eid) for eid in row.get("source_evidence_ids", []) if eid]
+    target_ids = [str(eid) for eid in row.get("target_evidence_ids", []) if eid]
+    positive = list(row.get("positive_checks") or [])
+    negative = list(row.get("negative_checks") or [])
+    counter_ids = list(row.get("counter_evidence_ids") or [])
+    confidence = float(row.get("confidence") or 0.0)
+    status = "unverified"
+    comparability = _comparability_schema(relation_type=relation_type)
+
+    if not source_ids or not target_ids:
+        comparability = _comparability_schema(relation_type=relation_type, verdict="unverified")
+        negative.append("verifier: missing source or target evidence")
+        next_row.update(
+            {
+                "positive_checks": _unique(positive),
+                "negative_checks": _unique(negative),
+                "counter_evidence_ids": _unique(counter_ids),
+                "comparability_json": comparability,
+                "confidence": min(confidence, 0.45),
+                "status": status,
+                "verifier_version": VERIFIER_VERSION,
+            }
+        )
+        return next_row
+
+    positive.extend(
+        [
+            "verifier: source and target evidence are present",
+            "verifier: source and target are distinct papers",
+        ]
+    )
+    left = grouped[source_paper_id]
+    right = grouped[target_paper_id]
+
+    if relation_type == "uses_same_dataset":
+        source_labels = {str(item.get("normalized_label") or "").lower() for item in _evidence_for_ids(evidence_by_id, source_ids, "dataset")}
+        target_labels = {str(item.get("normalized_label") or "").lower() for item in _evidence_for_ids(evidence_by_id, target_ids, "dataset")}
+        shared_dataset = bool(source_labels & target_labels)
+        comparability = _comparability_schema(
+            relation_type=relation_type,
+            shared_dataset=shared_dataset,
+            shared_setting=shared_dataset,
+            verdict="verified" if shared_dataset else "needs_more_evidence",
+        )
+        if shared_dataset:
+            positive.append("verifier: exact dataset label match")
+            status = "verified"
+            confidence = max(confidence, 0.88)
+        else:
+            negative.append("verifier: dataset labels diverge")
+            counter_ids.extend(source_ids + target_ids)
+            status = "needs_more_evidence"
+
+    elif relation_type == "same_problem":
+        shared_problem = bool(_shared_by_type(left, right, "problem", depth=3))
+        comparability = _comparability_schema(
+            relation_type=relation_type,
+            shared_task=shared_problem,
+            verdict="verified" if shared_problem else "needs_more_evidence",
+        )
+        if shared_problem:
+            positive.append("verifier: shared problem taxonomy")
+            status = "verified"
+            confidence = max(confidence, 0.79)
+        else:
+            negative.append("verifier: problem evidence not aligned")
+            counter_ids.extend(_setting_counter_ids(left, right, "problem", shared=False))
+            status = "needs_more_evidence"
+
+    elif relation_type == "method_variant":
+        shared_method = bool(_shared_by_type(left, right, "method", depth=2))
+        comparability = _comparability_schema(
+            relation_type=relation_type,
+            shared_setting=shared_method,
+            verdict="verified" if shared_method else "needs_more_evidence",
+        )
+        if shared_method:
+            positive.append("verifier: shared method family")
+            status = "verified"
+            confidence = max(confidence, 0.75)
+        else:
+            negative.append("verifier: method family not aligned")
+            counter_ids.extend(_setting_counter_ids(left, right, "method", shared=False))
+            status = "needs_more_evidence"
+
+    elif relation_type == "transferable_method":
+        comparability = _comparability_schema(
+            relation_type=relation_type,
+            shared_task=False,
+            shared_setting=False,
+            verdict="needs_more_evidence",
+        )
+        positive.append("verifier: relation is a transfer hypothesis, not direct evidence of feasibility")
+        negative.append("verifier: transfer feasibility is not established")
+        status = "needs_more_evidence"
+        confidence = min(confidence, 0.68)
+
+    elif relation_type == "conflicting_claim":
+        shared_metric = bool(_same_label_pairs(left, right, "metric"))
+        shared_problem = bool(_shared_by_type(left, right, "problem", depth=3))
+        shared_dataset = bool(_same_label_pairs(left, right, "dataset"))
+        shared_method = bool(_shared_by_type(left, right, "method", depth=2))
+        selected_types = _selected_evidence_types(evidence_by_id, source_ids + target_ids)
+        has_result_and_claim = "result" in selected_types and "claim" in selected_types
+        claim_direction = "opposing" if has_result_and_claim else "unknown"
+        comparability = _comparability_schema(
+            relation_type=relation_type,
+            shared_task=shared_problem,
+            shared_dataset=shared_dataset,
+            shared_metric=shared_metric,
+            shared_setting=shared_method,
+            claim_direction=claim_direction,
+            verdict="verified" if shared_metric and shared_problem and shared_dataset and has_result_and_claim else "needs_more_evidence",
+        )
+        if shared_metric and shared_problem and has_result_and_claim:
+            positive.extend(
+                [
+                    "verifier: same task/problem and metric evidence found",
+                    "verifier: result and claim evidence have opposing polarity",
+                ]
+            )
+            if shared_dataset:
+                positive.append("verifier: shared dataset evidence found")
+                negative.append("verifier: conflict requires LLM or manual confirmation")
+                status = "needs_more_evidence"
+                confidence = min(max(confidence, 0.84), 0.86)
+            else:
+                negative.append("verifier: conflict lacks same dataset support")
+                counter_ids.extend(_setting_counter_ids(left, right, "dataset", shared=False))
+                status = "needs_more_evidence"
+            counter_ids.extend(_setting_counter_ids(left, right, "method", shared=shared_method))
+            if not shared_method:
+                negative.append("verifier: method setting not matched")
+        else:
+            negative.append("verifier: dataset setting not matched")
+            counter_ids.extend(_setting_counter_ids(left, right, "dataset", shared=shared_dataset))
+            status = "needs_more_evidence"
+
+    else:
+        status = _auto_relation_status(next_row)
+
+    next_row.update(
+        {
+            "positive_checks": _unique(positive),
+            "negative_checks": _unique(negative),
+            "counter_evidence_ids": _unique(counter_ids),
+            "comparability_json": comparability,
+            "confidence": round(confidence, 3),
+            "status": status,
+            "verifier_version": VERIFIER_VERSION,
+        }
+    )
+    return next_row
+
+
+def _paper_title_by_id(rows: list[dict[str, Any]]) -> dict[str, str]:
+    return {str(row.get("paper_id") or ""): str(row.get("title") or row.get("paper_id") or "") for row in rows}
+
+
+def _relation_llm_payload(relations: list[dict[str, Any]], rows: list[dict[str, Any]], evidence_by_id: dict[str, dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    title_by_id = _paper_title_by_id(rows)
+    candidates: list[dict[str, Any]] = []
+    priority = {"conflicting_claim": 0, "transferable_method": 1, "method_variant": 2, "same_problem": 3, "uses_same_dataset": 4}
+    for row in sorted(relations, key=lambda item: (priority.get(str(item.get("relation_type") or ""), 9), -float(item.get("confidence") or 0)))[:limit]:
+        source_ids = [str(eid) for eid in row.get("source_evidence_ids", []) if eid]
+        target_ids = [str(eid) for eid in row.get("target_evidence_ids", []) if eid]
+        candidates.append(
+            {
+                "relation_id": str(row.get("relation_id") or ""),
+                "relation_type": str(row.get("relation_type") or ""),
+                "source_paper": {
+                    "paper_id": str(row.get("source_paper_id") or ""),
+                    "title": title_by_id.get(str(row.get("source_paper_id") or ""), ""),
+                },
+                "target_paper": {
+                    "paper_id": str(row.get("target_paper_id") or ""),
+                    "title": title_by_id.get(str(row.get("target_paper_id") or ""), ""),
+                },
+                "source_evidence": _evidence_excerpt(evidence_by_id, source_ids),
+                "target_evidence": _evidence_excerpt(evidence_by_id, target_ids),
+                "rule_positive_checks": row.get("positive_checks") or [],
+                "rule_negative_checks": row.get("negative_checks") or [],
+            }
+        )
+    return candidates
+
+
+def _json_object_from_text(text: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _llm_decision_by_relation(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    decisions = raw.get("relations")
+    if not isinstance(decisions, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for item in decisions:
+        if not isinstance(item, dict):
+            continue
+        relation_id = str(item.get("relation_id") or "")
+        if not relation_id:
+            continue
+        status = str(item.get("status") or "").strip()
+        if status not in {"verified", "needs_more_evidence", "rejected", "unverified"}:
+            status = "needs_more_evidence"
+        out[relation_id] = {
+            "status": status,
+            "confidence": float(item.get("confidence") or 0.0),
+            "positive_checks": [str(value) for value in item.get("positive_checks", []) if isinstance(value, str)][:5],
+            "negative_checks": [str(value) for value in item.get("negative_checks", []) if isinstance(value, str)][:5],
+            "counter_evidence_ids": [str(value) for value in item.get("counter_evidence_ids", []) if isinstance(value, str)][:6],
+        }
+    return out
+
+
+def _apply_llm_relation_decisions(relations: list[dict[str, Any]], decisions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    if not decisions:
+        return relations
+    out: list[dict[str, Any]] = []
+    for row in relations:
+        next_row = dict(row)
+        decision = decisions.get(str(row.get("relation_id") or ""))
+        if decision:
+            status = str(decision.get("status") or row.get("status") or "needs_more_evidence")
+            next_row["status"] = status
+            next_row["confidence"] = round(max(float(row.get("confidence") or 0.0), min(1.0, float(decision.get("confidence") or 0.0))), 3)
+            next_row["positive_checks"] = _unique(list(row.get("positive_checks") or []) + ["llm: relation accepted"] + list(decision.get("positive_checks") or []))
+            llm_marker = ""
+            if status == "needs_more_evidence":
+                llm_marker = "llm: relation needs more evidence"
+            elif status == "rejected":
+                llm_marker = "llm: relation rejected"
+            next_row["negative_checks"] = _unique(list(row.get("negative_checks") or []) + ([llm_marker] if llm_marker else []) + list(decision.get("negative_checks") or []))
+            next_row["counter_evidence_ids"] = _unique(list(row.get("counter_evidence_ids") or []) + list(decision.get("counter_evidence_ids") or []))
+            next_row["verifier_version"] = LLM_VERIFIER_VERSION
+        out.append(next_row)
+    return out
+
+
+async def _maybe_llm_verify_relations(relations: list[dict[str, Any]], rows: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    settings = get_settings()
+    runtime = get_llm_runtime_config()
+    if not relations or not settings.research_discovery_llm_verify_enabled or not runtime.base_url or not runtime.default_thinking_model:
+        return relations
+    evidence_by_id = {str(item.get("evidence_id") or ""): item for item in evidence}
+    payload = _relation_llm_payload(
+        relations,
+        rows,
+        evidence_by_id,
+        max(1, int(settings.research_discovery_llm_verify_limit or 1)),
+    )
+    if not payload:
+        return relations
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You verify cross-paper research relation candidates. "
+                "Use only the provided evidence quotes. Return strict JSON: "
+                "{\"relations\":[{\"relation_id\":\"...\",\"status\":\"verified|needs_more_evidence|rejected\","
+                "\"confidence\":0.0,\"positive_checks\":[\"...\"],\"negative_checks\":[\"...\"],"
+                "\"counter_evidence_ids\":[\"...\"]}]}. "
+                "For conflicting_claim, mark verified only if task, metric, dataset/setting, and claim polarity are comparable."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps({"candidates": payload}, ensure_ascii=False),
+        },
+    ]
+    try:
+        raw = await get_llm_service().chat(
+            messages,
+            model=settings.research_discovery_llm_verify_model.strip(),
+            temperature=0.0,
+        )
+        return _apply_llm_relation_decisions(relations, _llm_decision_by_relation(_json_object_from_text(raw)))
+    except Exception as exc:
+        logger.warning("LLM relation verification failed; using rule verifier results: %s", exc)
+        return [
+            {
+                **row,
+                "negative_checks": _unique(list(row.get("negative_checks") or []) + ["llm: verifier failed; kept rule verifier result"]),
+            }
+            for row in relations
+        ]
+
+
 def _relation_rows(rows: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped = _group_evidence(evidence)
+    evidence_by_id = {str(item.get("evidence_id") or ""): item for item in evidence}
     relations: list[dict[str, Any]] = []
     for idx, left_row in enumerate(rows):
         left_id = str(left_row.get("paper_id") or "")
@@ -658,7 +1158,32 @@ def _relation_rows(rows: list[dict[str, Any]], evidence: list[dict[str, Any]]) -
                         "confidence": 0.82,
                     }
                 )
-    return relations
+    return [_verify_relation_candidate(row, grouped, evidence_by_id) for row in relations]
+
+
+async def _verified_card_paper_scope(card_id: str) -> list[str]:
+    rows = await db.fetch_all(
+        """
+        SELECT DISTINCT kc.paper_id
+          FROM knowledge_cards kc
+          JOIN knowledge_cards source
+            ON source.card_id = ?
+         WHERE kc.status = 'verified'
+           AND kc.asset_level = 'action'
+           AND source.status = 'verified'
+           AND source.asset_level = 'action'
+           AND kc.paper_id != ''
+           AND (
+                (source.normalized_key != '' AND lower(kc.normalized_key) = lower(source.normalized_key))
+             OR (source.card_type != '' AND lower(kc.card_type) = lower(source.card_type))
+             OR (source.tags != '' AND lower(kc.tags) LIKE '%' || lower(source.tags) || '%')
+             OR (kc.tags != '' AND lower(source.tags) LIKE '%' || lower(kc.tags) || '%')
+           )
+         LIMIT 80
+        """,
+        (card_id,),
+    )
+    return [str(row.get("paper_id") or "") for row in rows if row.get("paper_id")]
 
 
 async def _upsert_relations(relations: list[dict[str, Any]]) -> None:
@@ -676,8 +1201,10 @@ async def _upsert_relations(relations: list[dict[str, Any]]) -> None:
             _json(row["positive_checks"]),
             _json(row["negative_checks"]),
             _json(row["counter_evidence_ids"]),
+            _json(row.get("comparability_json") or {}),
             row["confidence"],
-            "unverified",
+            row.get("status") or _auto_relation_status(row),
+            row.get("verifier_version") or VERIFIER_VERSION,
             DISCOVERY_VERSION,
         )
         for row in relations
@@ -687,19 +1214,41 @@ async def _upsert_relations(relations: list[dict[str, Any]]) -> None:
         INSERT INTO research_relation_edges (
             relation_id, relation_type, source_paper_id, target_paper_id,
             source_evidence_ids, target_evidence_ids, rule_id, positive_checks,
-            negative_checks, counter_evidence_ids, confidence, status, relation_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            negative_checks, counter_evidence_ids, comparability_json, confidence, status, verifier_version,
+            relation_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(relation_id) DO UPDATE SET
             positive_checks = excluded.positive_checks,
             negative_checks = excluded.negative_checks,
             counter_evidence_ids = excluded.counter_evidence_ids,
+            comparability_json = excluded.comparability_json,
             confidence = excluded.confidence,
+            status = CASE
+                WHEN research_relation_edges.status IN ('confirmed', 'rejected') THEN research_relation_edges.status
+                ELSE excluded.status
+            END,
+            verifier_version = excluded.verifier_version,
             relation_version = excluded.relation_version,
             updated_at = datetime('now')
         WHERE research_relation_edges.status != 'rejected'
         """,
         params,
     )
+
+
+def _auto_relation_status(row: dict[str, Any]) -> str:
+    confidence = float(row.get("confidence") or 0.0)
+    relation_type = str(row.get("relation_type") or "")
+    positive = _loads_list(_json(row.get("positive_checks") or []))
+    source_ids = row.get("source_evidence_ids") or []
+    target_ids = row.get("target_evidence_ids") or []
+    if relation_type == "conflicting_claim":
+        return "needs_more_evidence"
+    if confidence >= 0.82 and positive and source_ids and target_ids:
+        return "verified"
+    if confidence >= 0.6:
+        return "needs_more_evidence"
+    return "unverified"
 
 
 async def _load_relations(paper_ids: list[str]) -> list[dict[str, Any]]:
@@ -731,11 +1280,6 @@ def _build_gap_rows(evidence: list[dict[str, Any]], relations: list[dict[str, An
     counter_ids: set[str] = set()
     for item in by_type.get("result", []):
         counter_ids.add(str(item.get("evidence_id") or ""))
-    covered_problem_prefixes = {
-        _taxonomy_prefix(str(item.get("taxonomy_path") or ""), 3)
-        for item in by_type.get("problem", [])
-    }
-
     gaps: list[dict[str, Any]] = []
     relation_counter = Counter(str(row.get("relation_type") or "") for row in relations)
 
@@ -761,6 +1305,8 @@ def _build_gap_rows(evidence: list[dict[str, Any]], relations: list[dict[str, An
             ][:4]
         coverage_status = "partially_covered" if local_counter else "uncovered"
         title = f"Resolve limitation: {str(limitation.get('normalized_label') or 'open limitation')[:80]}"
+        limitation_label = str(limitation.get("normalized_label") or "open limitation")
+        target_task = str((related_problem or {}).get("normalized_label") or limitation_label)
         gaps.append(
             {
                 "gap_id": _gap_id(title, support_ids),
@@ -769,6 +1315,15 @@ def _build_gap_rows(evidence: list[dict[str, Any]], relations: list[dict[str, An
                 "description": str(limitation.get("quote") or ""),
                 "support_evidence_ids": support_ids,
                 "counter_evidence_ids": local_counter,
+                "related_synthesis_card_ids": [],
+                "related_card_ids": [],
+                "research_question": f"How can we address {limitation_label} under the local corpus assumptions?",
+                "target_task": target_task,
+                "constraints_json": [str(limitation.get("quote") or "")[:240]],
+                "baseline_plan": "Use the closest verified method/result cards on the same task as local baselines.",
+                "contribution": "A focused method or evaluation change that resolves a documented limitation.",
+                "target_venue": "",
+                "history_json": [{"event": "generated_from_limitation", "paper_id": paper_id, "evidence_ids": support_ids}],
                 "coverage_status": coverage_status,
                 "novelty_score": 0.78 if coverage_status == "uncovered" else 0.58,
                 "feasibility_score": 0.62,
@@ -797,6 +1352,15 @@ def _build_gap_rows(evidence: list[dict[str, Any]], relations: list[dict[str, An
                 "description": "Transferable-method relation generated only when source method evidence and target problem evidence both exist.",
                 "support_evidence_ids": support_ids[:5],
                 "counter_evidence_ids": [],
+                "related_synthesis_card_ids": [],
+                "related_card_ids": [],
+                "research_question": "Which assumptions must hold for this method transfer to work on the target task?",
+                "target_task": "cross-task transfer",
+                "constraints_json": _loads_list(str(relation.get("negative_checks") or "[]")),
+                "baseline_plan": "Compare against the target-paper baseline and the source method without transfer-specific changes.",
+                "contribution": "A verified transfer recipe with failure-mode analysis across local tasks.",
+                "target_venue": "",
+                "history_json": [{"event": "generated_from_relation", "relation_id": str(relation.get("relation_id") or "")}],
                 "coverage_status": "uncovered",
                 "novelty_score": 0.66,
                 "feasibility_score": 0.52,
@@ -822,6 +1386,15 @@ def _build_gap_rows(evidence: list[dict[str, Any]], relations: list[dict[str, An
                 "description": "Collect more papers or verify extracted evidence before promoting a gap to an idea.",
                 "support_evidence_ids": evidence_ids,
                 "counter_evidence_ids": list(counter_ids)[:4],
+                "related_synthesis_card_ids": [],
+                "related_card_ids": [],
+                "research_question": "What evidence is still missing before this corpus can support a research claim?",
+                "target_task": "corpus audit",
+                "constraints_json": ["insufficient verified local evidence"],
+                "baseline_plan": "Add or verify at least three papers and rebuild discovery before planning experiments.",
+                "contribution": "A cleaner evidence base before idea promotion.",
+                "target_venue": "",
+                "history_json": [{"event": "generated_from_corpus_audit", "evidence_ids": evidence_ids}],
                 "coverage_status": coverage_status,
                 "novelty_score": 0.35,
                 "feasibility_score": 0.7,
@@ -848,6 +1421,15 @@ async def _upsert_gaps(gaps: list[dict[str, Any]]) -> None:
             row["description"],
             _json(row["support_evidence_ids"]),
             _json(row["counter_evidence_ids"]),
+            _json(row.get("related_synthesis_card_ids") or []),
+            _json(row.get("related_card_ids") or []),
+            row.get("research_question") or row["hypothesis"],
+            row.get("target_task") or "",
+            _json(row.get("constraints_json") or []),
+            row.get("baseline_plan") or "",
+            row.get("contribution") or "",
+            row.get("target_venue") or "",
+            _json(row.get("history_json") or []),
             row["coverage_status"],
             row["novelty_score"],
             row["feasibility_score"],
@@ -866,15 +1448,45 @@ async def _upsert_gaps(gaps: list[dict[str, Any]]) -> None:
         """
         INSERT INTO research_gaps (
             gap_id, title, hypothesis, description, support_evidence_ids,
-            counter_evidence_ids, coverage_status, novelty_score, feasibility_score,
-            evidence_strength, risk_score, experiment_cost, domain_value, status,
-            rejection_reason, minimum_experiment, gap_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            counter_evidence_ids, related_synthesis_card_ids, related_card_ids,
+            research_question, target_task, constraints_json, baseline_plan,
+            contribution, target_venue, history_json, coverage_status,
+            novelty_score, feasibility_score, evidence_strength, risk_score,
+            experiment_cost, domain_value, status, rejection_reason,
+            minimum_experiment, gap_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(gap_id) DO UPDATE SET
             hypothesis = excluded.hypothesis,
             description = excluded.description,
             support_evidence_ids = excluded.support_evidence_ids,
             counter_evidence_ids = excluded.counter_evidence_ids,
+            related_synthesis_card_ids = excluded.related_synthesis_card_ids,
+            related_card_ids = excluded.related_card_ids,
+            research_question = CASE
+                WHEN research_gaps.research_question != '' THEN research_gaps.research_question
+                ELSE excluded.research_question
+            END,
+            target_task = CASE
+                WHEN research_gaps.target_task != '' THEN research_gaps.target_task
+                ELSE excluded.target_task
+            END,
+            constraints_json = excluded.constraints_json,
+            baseline_plan = CASE
+                WHEN research_gaps.baseline_plan != '' THEN research_gaps.baseline_plan
+                ELSE excluded.baseline_plan
+            END,
+            contribution = CASE
+                WHEN research_gaps.contribution != '' THEN research_gaps.contribution
+                ELSE excluded.contribution
+            END,
+            target_venue = CASE
+                WHEN research_gaps.target_venue != '' THEN research_gaps.target_venue
+                ELSE excluded.target_venue
+            END,
+            history_json = CASE
+                WHEN research_gaps.history_json != '[]' THEN research_gaps.history_json
+                ELSE excluded.history_json
+            END,
             coverage_status = excluded.coverage_status,
             novelty_score = excluded.novelty_score,
             feasibility_score = excluded.feasibility_score,
@@ -884,7 +1496,7 @@ async def _upsert_gaps(gaps: list[dict[str, Any]]) -> None:
             domain_value = excluded.domain_value,
             gap_version = excluded.gap_version,
             updated_at = datetime('now')
-        WHERE research_gaps.status NOT IN ('rejected', 'promoted_to_idea')
+        WHERE research_gaps.status NOT IN ('rejected', 'covered', 'pursue', 'experiment_planned', 'promoted_to_idea')
         """,
         params,
     )
@@ -917,7 +1529,7 @@ def _evidence_response(row: dict[str, Any]) -> DiscoveryEvidenceResponse:
         model_version=str(row.get("model_version") or ""),
         prompt_version=str(row.get("prompt_version") or ""),
         status=str(row.get("status") or ""),
-        revision_history=_loads_list(str(row.get("revision_history") or "[]")),
+        revision_history=_loads_any_list(str(row.get("revision_history") or "[]")),
         evidence_version=int(row.get("evidence_version") or 1),
     )
 
@@ -1003,8 +1615,10 @@ def _edges_response(relations: list[dict[str, Any]], evidence_by_id: dict[str, d
                 positive_checks=_loads_list(str(row.get("positive_checks") or "[]")),
                 negative_checks=_loads_list(str(row.get("negative_checks") or "[]")),
                 counter_evidence_ids=_loads_list(str(row.get("counter_evidence_ids") or "[]")),
+                comparability_json=_loads_dict(str(row.get("comparability_json") or "{}")),
                 confidence=float(row.get("confidence") or 0.0),
                 status=str(row.get("status") or ""),
+                verifier_version=str(row.get("verifier_version") or ""),
                 relation_version=int(row.get("relation_version") or 1),
             )
         )
@@ -1032,10 +1646,12 @@ def _gap_response(row: dict[str, Any], evidence_by_id: dict[str, dict[str, Any]]
         experiment_cost=float(row.get("experiment_cost") or 0.0),
         domain_value=float(row.get("domain_value") or 0.0),
     )
+    full_description = _full_gap_description(str(row.get("description") or ""), support_ids, evidence_by_id)
     return DiscoveryGapResponse(
         gap_id=str(row.get("gap_id") or ""),
         title=str(row.get("title") or ""),
         description=str(row.get("description") or ""),
+        full_description=full_description,
         score=round((scores.novelty + scores.feasibility + scores.evidence_strength + scores.domain_value - scores.risk - scores.experiment_cost * 0.4) / 4, 3),
         paper_ids=paper_ids,
         signals=signals,
@@ -1043,13 +1659,43 @@ def _gap_response(row: dict[str, Any], evidence_by_id: dict[str, dict[str, Any]]
         hypothesis=str(row.get("hypothesis") or ""),
         support_evidence_ids=support_ids,
         counter_evidence_ids=counter_ids,
+        related_synthesis_card_ids=_loads_list(str(row.get("related_synthesis_card_ids") or "[]")),
+        related_card_ids=_loads_list(str(row.get("related_card_ids") or "[]")),
+        research_question=str(row.get("research_question") or row.get("hypothesis") or ""),
+        target_task=str(row.get("target_task") or ""),
+        constraints_json=_loads_list(str(row.get("constraints_json") or "[]")),
+        baseline_plan=str(row.get("baseline_plan") or ""),
+        contribution=str(row.get("contribution") or ""),
+        target_venue=str(row.get("target_venue") or ""),
+        history_json=_loads_any_list(str(row.get("history_json") or "[]")),
         coverage_status=str(row.get("coverage_status") or ""),
         scores=scores,
         status=str(row.get("status") or ""),
         rejection_reason=str(row.get("rejection_reason") or ""),
         minimum_experiment=str(row.get("minimum_experiment") or ""),
+        hit_by_paper_ids=_loads_list(str(row.get("hit_by_paper_ids") or "[]")),
         gap_version=int(row.get("gap_version") or 1),
     )
+
+
+def _full_gap_description(description: str, support_ids: list[str], evidence_by_id: dict[str, dict[str, Any]]) -> str:
+    candidates: list[str] = []
+    ordered_ids = sorted(
+        support_ids,
+        key=lambda eid: 0 if str(evidence_by_id.get(eid, {}).get("evidence_type") or "") == "limitation" else 1,
+    )
+    for evidence_id in ordered_ids:
+        evidence = evidence_by_id.get(evidence_id)
+        if not evidence:
+            continue
+        full_text = _normalize(str(evidence.get("full_block_text") or ""))
+        quote = _normalize(str(evidence.get("quote") or ""))
+        text = full_text or quote
+        if text and text not in candidates:
+            candidates.append(text)
+    if not candidates:
+        return description
+    return candidates[0]
 
 
 def _reading_paths(themes: list[DiscoveryThemeResponse], rows: list[dict[str, Any]]) -> list[DiscoveryReadingPathResponse]:
@@ -1136,8 +1782,14 @@ async def _localize_discovery_response(response: PapersDiscoveryResponse) -> Pap
     for gap in response.gaps[:6]:
         gap.title = await _translate_display(gap.title)
         gap.description = await _translate_display(gap.description)
+        if gap.full_description == gap.description:
+            gap.full_description = gap.description
         gap.question = await _translate_display(gap.question)
         gap.hypothesis = await _translate_display(gap.hypothesis)
+        gap.research_question = await _translate_display(gap.research_question)
+        gap.target_task = await _translate_display(gap.target_task)
+        gap.baseline_plan = await _translate_display(gap.baseline_plan)
+        gap.contribution = await _translate_display(gap.contribution)
         gap.rejection_reason = await _translate_display(gap.rejection_reason)
         gap.minimum_experiment = await _translate_display(gap.minimum_experiment)
         gap.signals = await _translate_display_list(gap.signals)
@@ -1147,8 +1799,7 @@ async def _localize_discovery_response(response: PapersDiscoveryResponse) -> Pap
     return response
 
 
-async def build_research_discovery(limit: int = 200) -> PapersDiscoveryResponse:
-    rows = await _load_rows(limit)
+async def _build_discovery_for_rows(rows: list[dict[str, Any]], *, clear_auto: bool) -> PapersDiscoveryResponse:
     paper_ids = [str(row.get("paper_id") or "") for row in rows if row.get("paper_id")]
     blocks = await _load_blocks(paper_ids)
     title_by_id = {str(row.get("paper_id") or ""): str(row.get("title") or "") for row in rows}
@@ -1158,15 +1809,20 @@ async def build_research_discovery(limit: int = 200) -> PapersDiscoveryResponse:
     for block in blocks:
         drafts.extend(_drafts_from_block(block, title_by_id.get(str(block.get("paper_id") or ""), "")))
     drafts = _compact_drafts(drafts)
-    await _clear_auto_discovery(paper_ids)
+    if clear_auto:
+        await _clear_auto_discovery(paper_ids)
+    else:
+        await _clear_auto_relations_for_scope(paper_ids)
     await _upsert_evidence(drafts)
 
     evidence = await _load_evidence(paper_ids)
     relations = _relation_rows(rows, evidence)
+    relations = await _maybe_llm_verify_relations(relations, rows, evidence)
     await _upsert_relations(relations)
     stored_relations = await _load_relations(paper_ids)
     gaps = _build_gap_rows(evidence, stored_relations)
     await _upsert_gaps(gaps)
+    await knowledge_synthesis.rebuild_synthesis_cards(limit=500)
     stored_gaps = await _load_gaps()
 
     evidence_by_id = {str(item.get("evidence_id") or ""): item for item in evidence}
@@ -1193,3 +1849,103 @@ async def build_research_discovery(limit: int = 200) -> PapersDiscoveryResponse:
         evidence=[_evidence_response(item) for item in evidence[:200]],
     )
     return await _localize_discovery_response(response)
+
+
+async def build_research_discovery(limit: int = 200) -> PapersDiscoveryResponse:
+    return await _build_discovery_for_rows(await _load_rows(limit), clear_auto=True)
+
+
+async def update_gap_status(gap_id: str, data: dict[str, Any]) -> None:
+    row = await db.fetch_one("SELECT * FROM research_gaps WHERE gap_id = ?", (gap_id,))
+    if not row:
+        raise ValueError("Gap not found")
+    status = str(data.get("status") or row.get("status") or "candidate").strip()
+    allowed = {
+        "candidate",
+        "reviewing",
+        "pursue",
+        "experiment_planned",
+        "rejected",
+        "covered",
+        "needs_more_evidence",
+        "promoted_to_idea",
+        "kept",
+    }
+    if status not in allowed:
+        raise ValueError(f"Invalid gap status: {status}")
+    if status == "kept":
+        status = "reviewing"
+    history = _append_history(
+        row.get("history_json"),
+        {
+            "event": "status_changed",
+            "from": str(row.get("status") or ""),
+            "to": status,
+            "reason": str(data.get("rejection_reason") or data.get("reason") or ""),
+        },
+    )
+    await db.execute(
+        """
+        UPDATE research_gaps
+           SET status = ?,
+               rejection_reason = ?,
+               research_question = COALESCE(NULLIF(?, ''), research_question),
+               target_task = COALESCE(NULLIF(?, ''), target_task),
+               constraints_json = COALESCE(NULLIF(?, '[]'), constraints_json),
+               baseline_plan = COALESCE(NULLIF(?, ''), baseline_plan),
+               contribution = COALESCE(NULLIF(?, ''), contribution),
+               target_venue = COALESCE(NULLIF(?, ''), target_venue),
+               minimum_experiment = COALESCE(NULLIF(?, ''), minimum_experiment),
+               history_json = ?,
+               updated_at = datetime('now')
+         WHERE gap_id = ?
+        """,
+        (
+            status,
+            str(data.get("rejection_reason") or ""),
+            str(data.get("research_question") or ""),
+            str(data.get("target_task") or ""),
+            _json(data.get("constraints_json") or []),
+            str(data.get("baseline_plan") or ""),
+            str(data.get("contribution") or ""),
+            str(data.get("target_venue") or ""),
+            str(data.get("minimum_experiment") or ""),
+            history,
+            gap_id,
+        ),
+    )
+    try:
+        from app.services import knowledge_assets
+
+        await knowledge_assets.record_asset_event(
+            "gap_status_changed",
+            "gap",
+            gap_id,
+            source="synthesis",
+            detail={"from": str(row.get("status") or ""), "to": status},
+        )
+    except Exception as exc:
+        logger.warning("Failed to record gap status event for %s: %s", gap_id, exc)
+
+
+async def rebuild_discovery_for_card(card_id: str) -> dict[str, int]:
+    card = await db.fetch_one(
+        """
+        SELECT card_id, paper_id, status, asset_level
+          FROM knowledge_cards
+         WHERE card_id = ?
+        """,
+        (card_id,),
+    )
+    if not card or str(card.get("status") or "") != "verified" or str(card.get("asset_level") or "") != "action":
+        return {"papers": 0, "relations": 0, "gaps": 0}
+    source_paper_id = str(card.get("paper_id") or "")
+    paper_ids = _unique([source_paper_id] + await _verified_card_paper_scope(card_id))
+    if len(paper_ids) < 2:
+        return {"papers": len(paper_ids), "relations": 0, "gaps": 0}
+    response = await _build_discovery_for_rows(await _load_rows_for_papers(paper_ids), clear_auto=False)
+    return {
+        "papers": response.stats.total_papers,
+        "relations": response.stats.relation_edges,
+        "gaps": response.stats.gap_candidates,
+    }

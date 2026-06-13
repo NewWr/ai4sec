@@ -127,8 +127,31 @@ export interface PaperCollectionAssignRequest {
   note?: string;
 }
 
+export type DiscoveryRelationStatus = "confirmed" | "verified" | "needs_more_evidence" | "rejected" | "unverified";
+
 export interface DiscoveryRelationStatusRequest {
-  status: "confirmed" | "needs_more_evidence" | "rejected" | "unverified";
+  status: DiscoveryRelationStatus;
+}
+
+export interface DiscoveryGapStatusRequest {
+  status:
+    | "kept"
+    | "candidate"
+    | "reviewing"
+    | "pursue"
+    | "experiment_planned"
+    | "needs_more_evidence"
+    | "promoted_to_idea"
+    | "rejected"
+    | "covered";
+  rejection_reason?: string;
+  research_question?: string;
+  target_task?: string;
+  constraints_json?: string[];
+  baseline_plan?: string;
+  contribution?: string;
+  target_venue?: string;
+  minimum_experiment?: string;
 }
 
 export interface ModelListResponse {
@@ -206,6 +229,21 @@ export type DailyRecommendationStatus =
   | "ingested"
   | "ingest_failed";
 
+export interface DailyRecommendationGapMatch {
+  gap_id: string;
+  title: string;
+  matched_terms: string[];
+  score: number;
+}
+
+export interface DailyRecommendationScoreDetail {
+  matched_behavior?: string[];
+  behavior_score?: number;
+  matched_gaps?: DailyRecommendationGapMatch[];
+  gap_hit_count?: number;
+  [key: string]: unknown;
+}
+
 export interface DailyRecommendationItem {
   item_id: string;
   arxiv_id: string;
@@ -222,7 +260,7 @@ export interface DailyRecommendationItem {
   arxiv_url: string;
   pdf_url: string;
   score: number;
-  score_detail: Record<string, unknown>;
+  score_detail: DailyRecommendationScoreDetail;
   reason: string;
   title_translation_status: string;
   abstract_translation_status: string;
@@ -252,6 +290,8 @@ export interface DailyRecommendationRefreshRequest {
 }
 
 export interface DailyRecommendationRefreshResponse {
+  job_id: string;
+  status: "started" | "running" | "done" | "failed" | string;
   date: string;
   fetched: number;
   inserted_or_updated: number;
@@ -259,6 +299,8 @@ export interface DailyRecommendationRefreshResponse {
   skipped: number;
   message: string;
   errors?: Array<{ topic_id: string; topic: string; error: string }>;
+  started_at?: string;
+  finished_at?: string;
 }
 
 export interface DailyRecommendationFeedbackRequest {
@@ -526,7 +568,7 @@ export interface DiscoveryEvidence {
   model_version: string;
   prompt_version: string;
   status: string;
-  revision_history: string[];
+  revision_history: Array<Record<string, unknown>>;
   evidence_version: number;
 }
 
@@ -562,8 +604,10 @@ export interface DiscoveryEdge {
   positive_checks: string[];
   negative_checks: string[];
   counter_evidence_ids: string[];
+  comparability_json: Record<string, unknown>;
   confidence: number;
   status: string;
+  verifier_version: string;
   relation_version: number;
 }
 
@@ -580,6 +624,7 @@ export interface DiscoveryGap {
   gap_id: string;
   title: string;
   description: string;
+  full_description: string;
   score: number;
   paper_ids: string[];
   signals: string[];
@@ -587,11 +632,21 @@ export interface DiscoveryGap {
   hypothesis: string;
   support_evidence_ids: string[];
   counter_evidence_ids: string[];
+  related_synthesis_card_ids: string[];
+  related_card_ids: string[];
+  research_question: string;
+  target_task: string;
+  constraints_json: string[];
+  baseline_plan: string;
+  contribution: string;
+  target_venue: string;
+  history_json: Array<Record<string, unknown>>;
   coverage_status: string;
   scores: DiscoveryScore;
   status: string;
   rejection_reason: string;
   minimum_experiment: string;
+  hit_by_paper_ids: string[];
   gap_version: number;
 }
 
@@ -988,6 +1043,7 @@ export interface KnowledgeCardGeneration {
   cards_created: number;
   cards_skipped: number;
   duplicate_count: number;
+  critique_summary_json: string;
   error_msg: string;
   raw_output_json: string;
   card_ids: string[];
@@ -1011,6 +1067,11 @@ export interface WritingSnippet {
   snippet_id: string;
   content: string;
   source_card_id: string;
+  source_card_ids: string[];
+  evidence_ids: string[];
+  paragraph_plan_json: Record<string, unknown>;
+  trace_mode: "traceable" | "clean" | string;
+  usage_count: number;
   source_card_title: string;
   paper_id: string;
   paper_title: string;
@@ -1025,6 +1086,10 @@ export interface WritingSnippet {
 export interface WritingSnippetCreateRequest {
   content: string;
   source_card_id?: string;
+  source_card_ids?: string[];
+  evidence_ids?: string[];
+  paragraph_plan_json?: Record<string, unknown>;
+  trace_mode?: "traceable" | "clean";
   paper_id?: string;
   citation_key?: string;
   source_page?: number;
@@ -1035,11 +1100,42 @@ export interface WritingSnippetCreateRequest {
 export interface WritingSnippetUpdateRequest {
   content?: string;
   source_card_id?: string;
+  source_card_ids?: string[];
+  evidence_ids?: string[];
+  paragraph_plan_json?: Record<string, unknown>;
+  trace_mode?: "traceable" | "clean";
   paper_id?: string;
   citation_key?: string;
   source_page?: number;
   source_quote?: string;
   section_hint?: SectionHint;
+}
+
+export interface ComparisonTableRequest {
+  paper_ids: string[];
+}
+
+export interface ComparisonTableRow {
+  paper_id: string;
+  title: string;
+  citation_key: string;
+  method: string;
+  dataset: string;
+  metric: string;
+  result: string;
+  limitation: string;
+  conflicts?: string;
+}
+
+export interface ComparisonTableResponse {
+  columns: string[];
+  rows: ComparisonTableRow[];
+}
+
+export interface RelatedWorkComposeRequest {
+  card_ids: string[];
+  section_hint?: SectionHint;
+  trace_mode?: "traceable" | "clean";
 }
 
 export interface LocalSearchResult {
@@ -1080,6 +1176,16 @@ export interface KnowledgeHealth {
   read_without_notes: number;
   reading_without_cards: number;
   pending_ai_cards: number;
+  verified_cards_without_evidence: number;
+  draft_backlog_count: number;
+  draft_backlog_avg_age_days: number;
+  low_quality_ai_candidate_ratio: number;
+  weak_synthesis_cards: number;
+  gaps_missing_support_or_experiment: number;
+  writing_snippets_missing_trace: number;
+  local_qa_graph_hit_ratio: number;
+  export_citation_missing_rate: number;
+  isolated_evidence_count: number;
   issues: KnowledgeHealthIssue[];
 }
 
@@ -1195,6 +1301,10 @@ export interface LibrarySource {
   document_name: string;
   segment_id: string;
   score: number | null;
+  source_type?: "dify" | "knowledge_graph" | string;
+  card_id?: string;
+  paper_id?: string;
+  page?: number;
 }
 
 export interface LibraryAskResponse {
@@ -1220,4 +1330,5 @@ export interface LibraryAskRequest {
   language?: string;
   llm_model?: string;
   dataset_id?: string;
+  graph_only?: boolean;
 }

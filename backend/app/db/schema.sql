@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS knowledge_spaces (
     space_type      TEXT NOT NULL DEFAULT '', -- main_source | main_analysis | daily_source | daily_analysis | custom
     description     TEXT NOT NULL DEFAULT '',
     description_zh  TEXT NOT NULL DEFAULT '',
+    research_profile TEXT NOT NULL DEFAULT '', -- research questions / focus method families / writing topics; injected into card extraction & critique prompts
     dify_dataset_id TEXT NOT NULL DEFAULT '',
     is_system       INTEGER NOT NULL DEFAULT 0,
     sort_order      INTEGER NOT NULL DEFAULT 0,
@@ -308,6 +309,7 @@ CREATE TABLE IF NOT EXISTS research_evidence_items (
     status            TEXT NOT NULL DEFAULT 'unverified', -- unverified | verified | revised | rejected
     revision_history  TEXT NOT NULL DEFAULT '[]',
     source_hash       TEXT NOT NULL DEFAULT '',
+    source_run_id     TEXT NOT NULL DEFAULT '', -- which deep-read run produced this evidence (reuse Lens output)
     evidence_version  INTEGER NOT NULL DEFAULT 1,
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -326,8 +328,10 @@ CREATE TABLE IF NOT EXISTS research_relation_edges (
     positive_checks      TEXT NOT NULL DEFAULT '[]',
     negative_checks      TEXT NOT NULL DEFAULT '[]',
     counter_evidence_ids TEXT NOT NULL DEFAULT '[]',
+    comparability_json   TEXT NOT NULL DEFAULT '{}',
     confidence           REAL NOT NULL DEFAULT 0.0,
     status               TEXT NOT NULL DEFAULT 'unverified',
+    verifier_version     TEXT NOT NULL DEFAULT '',
     relation_version     INTEGER NOT NULL DEFAULT 1,
     created_at           TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
@@ -352,11 +356,48 @@ CREATE TABLE IF NOT EXISTS research_gaps (
     status                TEXT NOT NULL DEFAULT 'candidate', -- candidate | needs_more_evidence | rejected | promoted_to_idea
     rejection_reason      TEXT NOT NULL DEFAULT '',
     minimum_experiment    TEXT NOT NULL DEFAULT '',
+    hit_by_paper_ids      TEXT NOT NULL DEFAULT '[]',
+    related_synthesis_card_ids TEXT NOT NULL DEFAULT '[]',
+    related_card_ids      TEXT NOT NULL DEFAULT '[]',
+    research_question     TEXT NOT NULL DEFAULT '',
+    target_task           TEXT NOT NULL DEFAULT '',
+    constraints_json      TEXT NOT NULL DEFAULT '[]',
+    baseline_plan         TEXT NOT NULL DEFAULT '',
+    contribution          TEXT NOT NULL DEFAULT '',
+    target_venue          TEXT NOT NULL DEFAULT '',
+    history_json          TEXT NOT NULL DEFAULT '[]',
     gap_version           INTEGER NOT NULL DEFAULT 1,
     created_at            TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_research_gaps_status ON research_gaps(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_asset_events (
+    event_id    TEXT PRIMARY KEY,
+    event_type  TEXT NOT NULL DEFAULT '',
+    asset_type  TEXT NOT NULL DEFAULT '',
+    asset_id    TEXT NOT NULL DEFAULT '',
+    paper_id    TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_research_asset_events_asset ON research_asset_events(asset_type, asset_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_asset_events_type ON research_asset_events(event_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS library_qa_events (
+    qa_id            TEXT PRIMARY KEY,
+    question         TEXT NOT NULL DEFAULT '',
+    answer_chars     INTEGER NOT NULL DEFAULT 0,
+    source_types     TEXT NOT NULL DEFAULT '[]',
+    graph_sources    INTEGER NOT NULL DEFAULT 0,
+    dify_sources     INTEGER NOT NULL DEFAULT 0,
+    snippet_sources  INTEGER NOT NULL DEFAULT 0,
+    relation_sources INTEGER NOT NULL DEFAULT 0,
+    search_method    TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_library_qa_events_created ON library_qa_events(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS paper_annotations (
     annotation_id   TEXT PRIMARY KEY,
@@ -427,6 +468,8 @@ CREATE TABLE IF NOT EXISTS knowledge_cards (
     supporting_card_ids TEXT NOT NULL DEFAULT '[]',
     supporting_paper_ids TEXT NOT NULL DEFAULT '[]',
     evidence_strength TEXT NOT NULL DEFAULT '',
+    card_version   INTEGER NOT NULL DEFAULT 1,
+    revision_history TEXT NOT NULL DEFAULT '[]', -- audit trail of status/content transitions
     reviewed_at    TEXT NOT NULL DEFAULT '',
     reviewed_by    TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
@@ -448,6 +491,7 @@ CREATE TABLE IF NOT EXISTS knowledge_card_generations (
     cards_created     INTEGER NOT NULL DEFAULT 0,
     cards_skipped     INTEGER NOT NULL DEFAULT 0,
     duplicate_count   INTEGER NOT NULL DEFAULT 0,
+    critique_summary_json TEXT NOT NULL DEFAULT '{}',
     error_msg         TEXT NOT NULL DEFAULT '',
     raw_output_json   TEXT NOT NULL DEFAULT '[]',
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
@@ -473,6 +517,11 @@ CREATE TABLE IF NOT EXISTS writing_snippets (
     source_page    INTEGER NOT NULL DEFAULT 0,
     source_quote   TEXT NOT NULL DEFAULT '',
     section_hint   TEXT NOT NULL DEFAULT 'related_work', -- related_work | method | experiment | limitation
+    source_card_ids TEXT NOT NULL DEFAULT '[]',
+    evidence_ids    TEXT NOT NULL DEFAULT '[]',
+    paragraph_plan_json TEXT NOT NULL DEFAULT '{}',
+    trace_mode      TEXT NOT NULL DEFAULT 'traceable',
+    usage_count     INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );

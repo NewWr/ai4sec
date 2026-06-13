@@ -158,6 +158,15 @@ class AppSettings(BaseSettings):
     auto_knowledge_card_max_per_run: int = Field(default=12, alias="AUTO_KNOWLEDGE_CARD_MAX_PER_RUN")
     auto_knowledge_card_model: str = Field(default="", alias="AUTO_KNOWLEDGE_CARD_MODEL")
     auto_knowledge_card_prompt_version: str = Field(default="kg_card_v1", alias="AUTO_KNOWLEDGE_CARD_PROMPT_VERSION")
+    # Confidence gate for the card promotion state machine: a fact card that is
+    # evidence-anchored and scores at/above this auto-promotes draft -> verified;
+    # otherwise it stays draft in the bounded review queue (ADR-10).
+    knowledge_card_promote_confidence: float = Field(default=0.8, alias="KNOWLEDGE_CARD_PROMOTE_CONFIDENCE")
+
+    # --- Research discovery relation verification ---
+    research_discovery_llm_verify_enabled: bool = Field(default=False, alias="RESEARCH_DISCOVERY_LLM_VERIFY_ENABLED")
+    research_discovery_llm_verify_limit: int = Field(default=24, alias="RESEARCH_DISCOVERY_LLM_VERIFY_LIMIT")
+    research_discovery_llm_verify_model: str = Field(default="", alias="RESEARCH_DISCOVERY_LLM_VERIFY_MODEL")
 
     # --- Document partitioning for large papers and Supplementary PDFs ---
     document_partition_enabled: bool = Field(default=True, alias="DOCUMENT_PARTITION_ENABLED")
@@ -177,6 +186,15 @@ class AppSettings(BaseSettings):
     # Empty (default) keeps admin routes open for backward compatibility on
     # trusted/local deployments — set it before exposing the API publicly.
     admin_api_token: str = Field(default="", alias="ADMIN_API_TOKEN")
+    # Comma-separated CIDRs of trusted reverse proxies (Next.js rewrite layer,
+    # docker bridge networks). Only requests arriving FROM these networks get
+    # their `X-Forwarded-For` honoured for rate-limit accounting; everything
+    # else is keyed by the direct remote address so the header can't be forged
+    # to dodge limits. Defaults cover loopback + RFC1918 docker ranges.
+    trusted_proxy_cidrs: str = Field(
+        default="127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+        alias="TRUSTED_PROXY_CIDRS",
+    )
     # Swagger UI / ReDoc / openapi.json. Safe to leave on for local dev; set
     # ENABLE_DOCS=false to stop leaking the full API surface in production.
     enable_docs: bool = Field(default=True, alias="ENABLE_DOCS")

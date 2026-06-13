@@ -29,6 +29,7 @@ from app.models.sphere_models import (
     TimelineEntry,
     make_node_id,
 )
+from app.services.http_clients import get_default_http_client
 from app.services.llm_service import get_llm_service
 from app.services.llm_runtime_config import get_llm_runtime_config
 from app.services.paper_search import normalize_whitespace, title_fingerprint
@@ -290,32 +291,32 @@ async def step_3_resolve_canonical_ids(
         await _emit_progress(run_id, "resolve_canonical_ids", "done")
         return sphere
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # If no DOI, try Crossref first
-        if not center.doi and center.title:
-            try:
-                doi = await crossref_resolve_doi(client, center.title, center.authors)
-                if doi:
-                    center.doi = doi
-                    logger.info(f"[{paper_id}] sphere step 3: resolved DOI via Crossref: {doi}")
-            except Exception as e:
-                logger.debug(f"[{paper_id}] sphere step 3: Crossref DOI lookup failed: {e}")
+    client = get_default_http_client()
+    # If no DOI, try Crossref first
+    if not center.doi and center.title:
+        try:
+            doi = await crossref_resolve_doi(client, center.title, center.authors)
+            if doi:
+                center.doi = doi
+                logger.info(f"[{paper_id}] sphere step 3: resolved DOI via Crossref: {doi}")
+        except Exception as e:
+            logger.debug(f"[{paper_id}] sphere step 3: Crossref DOI lookup failed: {e}")
 
-        # Resolve OpenAlex and S2 in parallel
-        oa_task = openalex_resolve_id(client, doi=center.doi, title=center.title)
-        s2_task = s2_resolve_id(client, doi=center.doi, arxiv_id=center.arxiv_id, title=center.title)
+    # Resolve OpenAlex and S2 in parallel
+    oa_task = openalex_resolve_id(client, doi=center.doi, title=center.title)
+    s2_task = s2_resolve_id(client, doi=center.doi, arxiv_id=center.arxiv_id, title=center.title)
 
-        oa_id, s2_id = await asyncio.gather(oa_task, s2_task, return_exceptions=True)
+    oa_id, s2_id = await asyncio.gather(oa_task, s2_task, return_exceptions=True)
 
-        if isinstance(oa_id, str):
-            center.openalex_id = oa_id
-        elif isinstance(oa_id, Exception):
-            logger.debug(f"[{paper_id}] sphere step 3: OpenAlex resolve failed: {oa_id}")
+    if isinstance(oa_id, str):
+        center.openalex_id = oa_id
+    elif isinstance(oa_id, Exception):
+        logger.debug(f"[{paper_id}] sphere step 3: OpenAlex resolve failed: {oa_id}")
 
-        if isinstance(s2_id, str):
-            center.s2_paper_id = s2_id
-        elif isinstance(s2_id, Exception):
-            logger.debug(f"[{paper_id}] sphere step 3: S2 resolve failed: {s2_id}")
+    if isinstance(s2_id, str):
+        center.s2_paper_id = s2_id
+    elif isinstance(s2_id, Exception):
+        logger.debug(f"[{paper_id}] sphere step 3: S2 resolve failed: {s2_id}")
 
     logger.info(
         f"[{paper_id}] sphere step 3: openalex={center.openalex_id or '(none)'} "
@@ -427,122 +428,118 @@ async def step_4_expand_graph_candidates(
         await _emit_progress(run_id, "expand_graph_candidates", "done")
         return sphere
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        tasks: list[tuple[str, Coroutine]] = []
+    client = get_default_http_client()
+    tasks: list[tuple[str, Coroutine]] = []
 
-        # OpenAlex channels
-        if center.openalex_id:
-            tasks.append(("oa_refs", openalex_get_referenced_works(client, center.openalex_id)))
-            tasks.append(("oa_cited_by", openalex_get_cited_by(client, center.openalex_id)))
-            tasks.append(("oa_related", openalex_get_related_works(client, center.openalex_id)))
+    # OpenAlex channels
+    if center.openalex_id:
+        tasks.append(("oa_refs", openalex_get_referenced_works(client, center.openalex_id)))
+        tasks.append(("oa_cited_by", openalex_get_cited_by(client, center.openalex_id)))
+        tasks.append(("oa_related", openalex_get_related_works(client, center.openalex_id)))
 
-        # S2 channels
-        if center.s2_paper_id:
-            tasks.append(("s2_refs", s2_get_references(client, center.s2_paper_id)))
-            tasks.append(("s2_cited_by", s2_get_citations(client, center.s2_paper_id)))
-            tasks.append(("s2_reco", s2_get_recommendations(client, center.s2_paper_id)))
+    # S2 channels
+    if center.s2_paper_id:
+        tasks.append(("s2_refs", s2_get_references(client, center.s2_paper_id)))
+        tasks.append(("s2_cited_by", s2_get_citations(client, center.s2_paper_id)))
+        tasks.append(("s2_reco", s2_get_recommendations(client, center.s2_paper_id)))
 
-        # Run all API calls in parallel
-        if tasks:
-            coros = [t[1] for t in tasks]
-            labels = [t[0] for t in tasks]
-            results = await asyncio.gather(*coros, return_exceptions=True)
+    # Run all API calls in parallel
+    if tasks:
+        coros = [task[1] for task in tasks]
+        labels = [task[0] for task in tasks]
+        results = await asyncio.gather(*coros, return_exceptions=True)
 
-            source_map = {
-                "oa_refs": CandidateSource.OPENALEX_REF,
-                "oa_cited_by": CandidateSource.OPENALEX_CITED_BY,
-                "oa_related": CandidateSource.OPENALEX_RELATED,
-                "s2_refs": CandidateSource.S2_REF,
-                "s2_cited_by": CandidateSource.S2_CITED_BY,
-                "s2_reco": CandidateSource.S2_RECO,
-            }
+        source_map = {
+            "oa_refs": CandidateSource.OPENALEX_REF,
+            "oa_cited_by": CandidateSource.OPENALEX_CITED_BY,
+            "oa_related": CandidateSource.OPENALEX_RELATED,
+            "s2_refs": CandidateSource.S2_REF,
+            "s2_cited_by": CandidateSource.S2_CITED_BY,
+            "s2_reco": CandidateSource.S2_RECO,
+        }
 
-            edge_type_map = {
-                "oa_refs": EdgeType.CITES,
-                "oa_cited_by": EdgeType.CITED_BY,
-                "oa_related": EdgeType.RELATED,
-                "s2_refs": EdgeType.CITES,
-                "s2_cited_by": EdgeType.CITED_BY,
-                "s2_reco": EdgeType.RELATED,
-            }
+        edge_type_map = {
+            "oa_refs": EdgeType.CITES,
+            "oa_cited_by": EdgeType.CITED_BY,
+            "oa_related": EdgeType.RELATED,
+            "s2_refs": EdgeType.CITES,
+            "s2_cited_by": EdgeType.CITED_BY,
+            "s2_reco": EdgeType.RELATED,
+        }
 
-            for label, result in zip(labels, results):
-                if isinstance(result, Exception):
-                    logger.warning(f"[{paper_id}] sphere step 4: {label} failed: {result}")
+        for label, result in zip(labels, results):
+            if isinstance(result, Exception):
+                logger.warning(f"[{paper_id}] sphere step 4: {label} failed: {result}")
+                continue
+            if not isinstance(result, list):
+                continue
+
+            source = source_map.get(label, CandidateSource.QUERY_SEARCH)
+            edge_type = edge_type_map.get(label, EdgeType.RELATED)
+            count = 0
+
+            for meta in result:
+                if not isinstance(meta, PaperMetadata) or not meta.title:
                     continue
-                if not isinstance(result, list):
+                node_id = make_node_id(doi=meta.doi, title=meta.title)
+                if node_id == center.node_id:
+                    continue
+                if _is_center_paper(center, meta.title, meta.doi):
                     continue
 
-                source = source_map.get(label, CandidateSource.QUERY_SEARCH)
-                edge_type = edge_type_map.get(label, EdgeType.RELATED)
-                count = 0
+                if node_id in sphere.nodes:
+                    existing = sphere.nodes[node_id]
+                    if not existing.doi and meta.doi:
+                        existing.doi = meta.doi
+                    if not existing.openalex_id and meta.openalex_id:
+                        existing.openalex_id = meta.openalex_id
+                    if not existing.s2_paper_id and meta.s2_paper_id:
+                        existing.s2_paper_id = meta.s2_paper_id
+                    if not existing.abstract_text and meta.abstract_text:
+                        existing.abstract_text = meta.abstract_text
+                    if meta.cited_by_count > existing.cited_by_count:
+                        existing.cited_by_count = meta.cited_by_count
+                    if not existing.venue and meta.venue:
+                        existing.venue = meta.venue
+                    if not existing.authors and meta.authors:
+                        existing.authors = meta.authors
+                    if meta.year and not existing.year:
+                        existing.year = meta.year
+                    if source not in existing.sources:
+                        existing.sources.append(source)
+                else:
+                    node = SphereNode(
+                        node_id=node_id,
+                        title=meta.title,
+                        doi=meta.doi,
+                        arxiv_id=meta.arxiv_id,
+                        openalex_id=meta.openalex_id,
+                        s2_paper_id=meta.s2_paper_id,
+                        year=meta.year,
+                        venue=meta.venue,
+                        authors=meta.authors,
+                        abstract_text=meta.abstract_text,
+                        cited_by_count=meta.cited_by_count,
+                        source=source,
+                        sources=[source],
+                    )
+                    sphere.nodes[node_id] = node
+                    count += 1
 
-                for meta in result:
-                    if not isinstance(meta, PaperMetadata) or not meta.title:
-                        continue
-                    node_id = make_node_id(doi=meta.doi, title=meta.title)
-                    if node_id == center.node_id:
-                        continue
-                    # Skip candidates that are actually the center paper
-                    if _is_center_paper(center, meta.title, meta.doi):
-                        continue
+                if edge_type == EdgeType.CITED_BY:
+                    sphere.edges.append(SphereEdge(
+                        source_node_id=node_id,
+                        target_node_id=center.node_id,
+                        edge_type=edge_type,
+                    ))
+                else:
+                    sphere.edges.append(SphereEdge(
+                        source_node_id=center.node_id,
+                        target_node_id=node_id,
+                        edge_type=edge_type,
+                    ))
 
-                    if node_id in sphere.nodes:
-                        # Merge metadata into existing node
-                        existing = sphere.nodes[node_id]
-                        if not existing.doi and meta.doi:
-                            existing.doi = meta.doi
-                        if not existing.openalex_id and meta.openalex_id:
-                            existing.openalex_id = meta.openalex_id
-                        if not existing.s2_paper_id and meta.s2_paper_id:
-                            existing.s2_paper_id = meta.s2_paper_id
-                        if not existing.abstract_text and meta.abstract_text:
-                            existing.abstract_text = meta.abstract_text
-                        if meta.cited_by_count > existing.cited_by_count:
-                            existing.cited_by_count = meta.cited_by_count
-                        if not existing.venue and meta.venue:
-                            existing.venue = meta.venue
-                        if not existing.authors and meta.authors:
-                            existing.authors = meta.authors
-                        if meta.year and not existing.year:
-                            existing.year = meta.year
-                        # Track all sources that contributed to this node
-                        if source not in existing.sources:
-                            existing.sources.append(source)
-                    else:
-                        node = SphereNode(
-                            node_id=node_id,
-                            title=meta.title,
-                            doi=meta.doi,
-                            arxiv_id=meta.arxiv_id,
-                            openalex_id=meta.openalex_id,
-                            s2_paper_id=meta.s2_paper_id,
-                            year=meta.year,
-                            venue=meta.venue,
-                            authors=meta.authors,
-                            abstract_text=meta.abstract_text,
-                            cited_by_count=meta.cited_by_count,
-                            source=source,
-                            sources=[source],
-                        )
-                        sphere.nodes[node_id] = node
-                        count += 1
-
-                    # Add edge
-                    if edge_type == EdgeType.CITED_BY:
-                        sphere.edges.append(SphereEdge(
-                            source_node_id=node_id,
-                            target_node_id=center.node_id,
-                            edge_type=edge_type,
-                        ))
-                    else:
-                        sphere.edges.append(SphereEdge(
-                            source_node_id=center.node_id,
-                            target_node_id=node_id,
-                            edge_type=edge_type,
-                        ))
-
-                logger.info(f"[{paper_id}] sphere step 4: {label} -> {count} new nodes")
+            logger.info(f"[{paper_id}] sphere step 4: {label} -> {count} new nodes")
 
     # Extract diverse search queries via LLM while waiting for S2 rate limits
     paper_ir = PaperIR.model_validate_json(state["paper_ir_json"])
@@ -1049,26 +1046,24 @@ async def step_8_download_and_parse(
 
     semaphore = asyncio.Semaphore(4)
 
-    async with httpx.AsyncClient(
-        headers={"User-Agent": DEFAULT_USER_AGENT},
-        timeout=60.0,
-    ) as client:
-        async def _do_one(node: SphereNode, dest: Path):
-            async with semaphore:
-                return await download_paper(
-                    node.doi,
-                    dest,
-                    credentials=credentials,
-                    title=node.title,
-                    client=client,
-                    timeout=60.0,
-                    retries=3,
-                )
+    client = get_default_http_client()
 
-        results = await asyncio.gather(
-            *(_do_one(node, dest) for _, node, dest in targets),
-            return_exceptions=True,
-        )
+    async def _do_one(node: SphereNode, dest: Path):
+        async with semaphore:
+            return await download_paper(
+                node.doi,
+                dest,
+                credentials=credentials,
+                title=node.title,
+                client=client,
+                timeout=60.0,
+                retries=3,
+            )
+
+    results = await asyncio.gather(
+        *(_do_one(node, dest) for _, node, dest in targets),
+        return_exceptions=True,
+    )
 
     ok_count = 0
     fail_count = 0

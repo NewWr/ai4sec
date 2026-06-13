@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,9 @@ from unittest.mock import AsyncMock, patch
 
 from app.db import database as db
 from app.services.mineru_adapter import (
+    MinerUCancelledError,
     MinerUPollTimeoutError,
+    _poll_until_done,
     _poll_until_done_sync,
     _update_parse_poll_sync,
 )
@@ -20,6 +23,10 @@ class _AlwaysRunningClient:
         self.calls = 0
 
     def get_batch_results(self, batch_id: str) -> dict:
+        self.calls += 1
+        return {"extract_result": [{"state": "running"}]}
+
+    async def get_batch_results_async(self, batch_id: str) -> dict:
         self.calls += 1
         return {"extract_result": [{"state": "running"}]}
 
@@ -50,6 +57,49 @@ class MinerUPollTimeoutTests(unittest.TestCase):
         self.assertEqual(poll_events[0]["poll_count"], 1)
         self.assertEqual(poll_events[0]["state_counts"], {"running": 1})
 
+    def test_poll_cancel_event_interrupts_sleep_cycle(self) -> None:
+        client = _AlwaysRunningClient()
+        cancel_event = threading.Event()
+
+        def cancel_on_sleep(seconds: float) -> bool:
+            cancel_event.set()
+            return True
+
+        cancel_event.wait = cancel_on_sleep  # type: ignore[method-assign]
+
+        with self.assertRaises(MinerUCancelledError):
+            _poll_until_done_sync(
+                client,
+                "batch-1",
+                sleep_s=6,
+                timeout_s=60,
+                cancel_event=cancel_event,
+            )
+
+        self.assertEqual(client.calls, 1)
+
+
+class MinerUAsyncPollTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_poll_cancel_event_interrupts_sleep_cycle(self) -> None:
+        client = _AlwaysRunningClient()
+        cancel_event = threading.Event()
+
+        async def cancel_soon() -> None:
+            await asyncio.sleep(0)
+            cancel_event.set()
+
+        task = asyncio.create_task(cancel_soon())
+        with self.assertRaises(MinerUCancelledError):
+            await _poll_until_done(
+                client,
+                "batch-1",
+                sleep_s=6,
+                timeout_s=60,
+                cancel_event=cancel_event,
+            )
+        await task
+        self.assertEqual(client.calls, 1)
+
 
 class MinerUProgressEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_mineru_parse_emits_running_progress_before_remote_parse(self) -> None:
@@ -76,7 +126,7 @@ class MinerUProgressEventTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(event["data"]["status"], "running")
                 raise RuntimeError("stop after progress")
 
-            with patch("app.api.runs._run_queues", {"run-1": queue}), patch(
+            with patch("app.api.runs._run_queues", {"run-1": {queue}}), patch(
                 "app.workflows.main_graph.mineru_adapter.parse_pdf",
                 new=AsyncMock(side_effect=fake_parse_pdf),
             ):

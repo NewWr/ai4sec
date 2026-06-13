@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from app.models.paper_ir import Block, PaperIR, Section
-from app.workflows.lens_subgraph import run_logic_lens
+from app.workflows.lens_subgraph import build_lens_section_contexts, run_logic_lens
 
 
 class _FakeLLM:
@@ -21,6 +21,30 @@ class _FakeLLM:
         })
         heading = messages[0]["content"].split("`")[1]
         return f"{heading}\n\nSegment response [p.1]"
+
+
+class _ConcurrentFakeLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.active = 0
+        self.peak = 0
+
+    async def chat(self, messages, model="", temperature=0.3):
+        self.calls += 1
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        heading = messages[0]["content"].split("`")[1]
+        delays = {
+            "## 1. 概览与动机": 0.04,
+            "## 2. 方法深读": 0.01,
+            "## 3. 实验与结果": 0.02,
+            "## 4. 批判性评估": 0.0,
+        }
+        try:
+            await asyncio.sleep(delays.get(heading, 0.03))
+            return f"{heading}\n\nConcurrent segment [p.1]"
+        finally:
+            self.active -= 1
 
 
 def _large_paper_ir() -> PaperIR:
@@ -80,6 +104,20 @@ def _large_paper_ir() -> PaperIR:
 
 
 class LensSegmentedTests(unittest.TestCase):
+    def test_lens_section_contexts_map_sections_to_target_card_types(self) -> None:
+        contexts = build_lens_section_contexts(
+            {
+                "method_pipeline": "Method context",
+                "experiments": "Experiment context",
+                "assessment": "Assessment context",
+            }
+        )
+        by_key = {item["section_key"]: item for item in contexts}
+
+        self.assertEqual(by_key["method_pipeline"]["target_card_types"], ["method"])
+        self.assertEqual(by_key["experiments"]["target_card_types"], ["dataset", "metric", "result"])
+        self.assertEqual(by_key["assessment"]["target_card_types"], ["limitation", "question", "idea"])
+
     def test_logic_lens_splits_method_into_two_llm_calls(self) -> None:
         fake_llm = _FakeLLM()
         state = {
@@ -113,6 +151,37 @@ class LensSegmentedTests(unittest.TestCase):
             "lens_experiments",
             "lens_assessment",
         ])
+        data = json.loads(result["final_json"])
+        self.assertTrue(data["lens_section_contexts"])
+        self.assertIn("target_card_types", data["lens_section_contexts"][0])
+
+    def test_logic_lens_parallel_calls_preserve_output_order_and_limit(self) -> None:
+        fake_llm = _ConcurrentFakeLLM()
+        state = {
+            "paper_id": "paper",
+            "run_id": "run",
+            "paper_ir_json": _large_paper_ir().model_dump_json(),
+            "pub_rank_json": json.dumps({"venue": "arXiv.org", "year": 2026}),
+            "language": "zh",
+            "llm_model": "model",
+            "progress": [],
+        }
+
+        with patch("app.workflows.lens_subgraph.get_llm_service", return_value=fake_llm), patch(
+            "app.workflows.lens_subgraph._emit_progress",
+        ):
+            result = asyncio.run(run_logic_lens(state))
+
+        self.assertEqual(fake_llm.calls, 5)
+        self.assertLessEqual(fake_llm.peak, 3)
+        markdown = result["final_markdown"]
+        positions = [
+            markdown.index("## 1. 概览与动机"),
+            markdown.index("## 2. 方法深读"),
+            markdown.index("## 3. 实验与结果"),
+            markdown.index("## 4. 批判性评估"),
+        ]
+        self.assertEqual(positions, sorted(positions))
 
     def test_logic_lens_keeps_supplementary_out_of_main_context(self) -> None:
         fake_llm = _FakeLLM()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -161,6 +162,7 @@ class KnowledgeAssetsApiTests(unittest.TestCase):
         )
         self.assertEqual(card.status_code, 200, card.text)
         card_id = card.json()["card_id"]
+        self.assertTrue(card.json()["evidence_ids"])
 
         search = self.client.get("/api/library/local-search?mode=cards&query=robustness")
         self.assertEqual(search.status_code, 200, search.text)
@@ -183,6 +185,50 @@ class KnowledgeAssetsApiTests(unittest.TestCase):
         bib = self.client.get("/api/papers/export/bibtex").json()["content"]
         self.assertIn("Vision2024paper1", bib)
 
+    def test_writing_composition_comparison_and_obsidian_export(self) -> None:
+        card = self.client.post(
+            "/api/knowledge/cards",
+            json={
+                "card_type": "result",
+                "title": "Robustness gain",
+                "content": "Improves robustness on ImageNet and COCO.",
+                "paper_id": "paper1",
+                "source_page": 3,
+                "source_quote": "The method improves robustness on ImageNet and COCO benchmarks.",
+                "status": "verified",
+                "confidence": 0.9,
+            },
+        )
+        self.assertEqual(card.status_code, 200, card.text)
+        card_id = card.json()["card_id"]
+
+        composed = self.client.post(
+            "/api/writing/compose-related-work",
+            json={"card_ids": [card_id], "section_hint": "related_work"},
+        )
+        self.assertEqual(composed.status_code, 200, composed.text)
+        self.assertIn("Improves robustness", composed.json()["content"])
+        self.assertEqual(composed.json()["source_card_id"], card_id)
+        self.assertEqual(composed.json()["source_card_ids"], [card_id])
+        self.assertTrue(composed.json()["evidence_ids"])
+        self.assertIn("order", composed.json()["paragraph_plan_json"])
+
+        table = self.client.post("/api/writing/comparison-table", json={"paper_ids": ["paper1"]})
+        self.assertEqual(table.status_code, 200, table.text)
+        self.assertEqual(table.json()["rows"][0]["paper_id"], "paper1")
+        self.assertIn("Improves robustness", table.json()["rows"][0]["result"])
+        self.assertIn("conflicts", table.json()["columns"])
+
+        traceable = self.client.get("/api/writing/export/markdown?mode=traceable").json()["content"]
+        self.assertIn("evidence_ids=", traceable)
+        clean = self.client.get("/api/writing/export/markdown?mode=clean").json()["content"]
+        self.assertNotIn("  - source:", clean)
+
+        obsidian = self.client.get("/api/writing/export/obsidian")
+        self.assertEqual(obsidian.status_code, 200, obsidian.text)
+        self.assertIn("# AI4Sec Knowledge Export", obsidian.json()["content"])
+        self.assertIn("Robustness gain", obsidian.json()["content"])
+
     def test_health_report_counts_quality_issues(self) -> None:
         resp = self.client.get("/api/health/knowledge")
         self.assertEqual(resp.status_code, 200, resp.text)
@@ -193,6 +239,8 @@ class KnowledgeAssetsApiTests(unittest.TestCase):
         self.assertGreaterEqual(body["stale_index_documents"], 2)
         self.assertGreaterEqual(body["missing_metadata_papers"], 1)
         self.assertGreaterEqual(body["unresolved_issues"], 1)
+        self.assertIn("local_qa_graph_hit_ratio", body)
+        self.assertIn("isolated_evidence_count", body)
         duplicate_issue = next(item for item in body["issues"] if item["issue_type"] == "duplicates")
         reasons = {group["reason"] for group in duplicate_issue["groups"]}
         self.assertIn("doi", reasons)
@@ -267,6 +315,15 @@ ER  -
         self.assertEqual(ris_export.status_code, 200, ris_export.text)
         self.assertIn("TI  - RIS Reference Import", ris_export.json()["content"])
         self.assertIn("ID  - lee2026ris", ris_export.json()["content"])
+
+        zotero = self.client.get("/api/papers/export/zotero-csl-json")
+        self.assertEqual(zotero.status_code, 200, zotero.text)
+        zotero_rows = json.loads(zotero.json()["content"])
+        nested = next(item for item in zotero_rows if item["id"] == "smith2025nested")
+        self.assertEqual(nested["type"], "article-journal")
+        self.assertEqual(nested["title"], "Nested Brace Reference Import")
+        self.assertEqual(nested["DOI"], "10.5555/nested")
+        self.assertEqual(nested["issued"]["date-parts"], [[2025]])
 
         candidates = self.client.get("/api/knowledge/duplicates")
         self.assertEqual(candidates.status_code, 200, candidates.text)

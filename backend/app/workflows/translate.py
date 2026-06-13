@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -28,6 +29,7 @@ _SECTION_RE = re.compile(r"(?=^## )", re.MULTILINE)
 
 # Maximum characters per translation chunk (~2000 tokens)
 _MAX_CHUNK_CHARS = 8000
+_TRANSLATE_CONCURRENCY = 3
 
 
 def _split_at_sections(markdown: str) -> list[str]:
@@ -99,11 +101,24 @@ async def translate_output(state: MainGraphState) -> dict[str, Any]:
         else:
             chunks = _split_at_sections(markdown)
             logger.info("[%s] translate_output: Split into %d chunks", state.get("paper_id", "?"), len(chunks))
-            translated_parts: list[str] = []
-            for i, chunk in enumerate(chunks):
+
+            async def _translate_limited(i: int, chunk: str, semaphore: asyncio.Semaphore) -> tuple[int, str]:
                 logger.info("[%s] translate_output: Translating chunk %d/%d (%d chars)...",
                              state.get("paper_id", "?"), i + 1, len(chunks), len(chunk))
-                translated_parts.append(await _translate_chunk(chunk, model))
+                async with semaphore:
+                    return i, await _translate_chunk(chunk, model)
+
+            semaphore = asyncio.Semaphore(_TRANSLATE_CONCURRENCY)
+            tasks = [asyncio.create_task(_translate_limited(i, chunk, semaphore)) for i, chunk in enumerate(chunks)]
+            try:
+                results = await asyncio.gather(*tasks)
+            except Exception:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            translated_parts = [part for _, part in sorted(results, key=lambda item: item[0])]
             translated = "\n\n".join(translated_parts)
 
         elapsed = time.perf_counter() - t0

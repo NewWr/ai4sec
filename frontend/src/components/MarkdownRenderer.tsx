@@ -1,5 +1,6 @@
 "use client";
 
+import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -169,7 +170,7 @@ interface MarkdownRendererProps {
   softMathErrors?: boolean;
 }
 
-export default function MarkdownRenderer({
+function MarkdownRenderer({
   content,
   evidenceAnchors = [],
   onCitationClick,
@@ -180,14 +181,20 @@ export default function MarkdownRenderer({
 
   // Normalize display equations to block form first, then keep citations as
   // Markdown links so raw HTML never leaks into rendered answers.
-  const processed = prepareCitationMarkdown(normalizeDisplayMath(content), evidenceAnchors);
-  const rehypePlugins: PluggableList = softMathErrors
-    ? [
-        rehypeRaw,
-        [rehypeSanitize, sanitizeSchema],
-        [rehypeKatex, { errorColor: "currentColor", strict: "ignore" }],
-      ]
-    : [rehypeRaw, [rehypeSanitize, sanitizeSchema], rehypeKatex];
+  const processed = useMemo(
+    () => prepareCitationMarkdown(normalizeDisplayMath(content), evidenceAnchors),
+    [content, evidenceAnchors],
+  );
+  const rehypePlugins: PluggableList = useMemo(
+    () => softMathErrors
+      ? [
+          rehypeRaw,
+          [rehypeSanitize, sanitizeSchema],
+          [rehypeKatex, { errorColor: "currentColor", strict: "ignore" }],
+        ]
+      : [rehypeRaw, [rehypeSanitize, sanitizeSchema], rehypeKatex],
+    [softMathErrors],
+  );
 
   return (
     <div className={`markdown-body${softMathErrors ? " markdown-body-soft-math" : ""}`}>
@@ -310,3 +317,5 @@ export default function MarkdownRenderer({
     </div>
   );
 }
+
+export default memo(MarkdownRenderer);

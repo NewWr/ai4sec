@@ -6,6 +6,7 @@ from app.models.schemas import (
     AiReviewMarkCreateRequest,
     AiReviewMarkResponse,
     AiReviewMarkUpdateRequest,
+    ComparisonTableRequest,
     DuplicateCandidatesResponse,
     ExportResponse,
     HealthFixRequest,
@@ -30,6 +31,7 @@ from app.models.schemas import (
     PaperNoteUpdateRequest,
     PaperResponse,
     ReferenceImportRequest,
+    RelatedWorkComposeRequest,
     WritingSnippetCreateRequest,
     WritingSnippetResponse,
     WritingSnippetUpdateRequest,
@@ -313,8 +315,34 @@ async def local_library_search(request: Request, mode: str = "cards", query: str
 
 @router.get("/writing/export/markdown", response_model=ExportResponse)
 @limiter.limit("30/minute")
-async def export_writing_markdown(request: Request, section_hint: str = ""):
-    return ExportResponse(content=await assets.export_snippets_markdown(section_hint))
+async def export_writing_markdown(request: Request, section_hint: str = "", mode: str = "traceable"):
+    return ExportResponse(content=await assets.export_snippets_markdown(section_hint, mode=mode))
+
+
+@router.post("/writing/compose-related-work", response_model=WritingSnippetResponse)
+@limiter.limit("20/minute")
+async def compose_related_work(request: Request, req: RelatedWorkComposeRequest):
+    try:
+        return WritingSnippetResponse(
+            **await assets.compose_related_work_snippet(req.card_ids, section_hint=req.section_hint)
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/writing/comparison-table")
+@limiter.limit("30/minute")
+async def build_comparison_table(request: Request, req: ComparisonTableRequest):
+    try:
+        return await assets.build_comparison_table(req.paper_ids)
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.get("/writing/export/obsidian", response_model=ExportResponse)
+@limiter.limit("30/minute")
+async def export_obsidian_markdown(request: Request):
+    return ExportResponse(content=await assets.export_obsidian_markdown())
 
 
 @router.get("/papers/export/bibtex", response_model=ExportResponse)
@@ -327,6 +355,12 @@ async def export_papers_bibtex(request: Request, collection_id: str = ""):
 @limiter.limit("30/minute")
 async def export_papers_ris(request: Request, collection_id: str = ""):
     return ExportResponse(content=await assets.export_ris(collection_id))
+
+
+@router.get("/papers/export/zotero-csl-json", response_model=ExportResponse)
+@limiter.limit("30/minute")
+async def export_papers_zotero_csl_json(request: Request, collection_id: str = ""):
+    return ExportResponse(content=await assets.export_zotero_csl_json(collection_id))
 
 
 @router.post("/papers/import-references", response_model=ImportResponse)

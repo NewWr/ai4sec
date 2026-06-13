@@ -127,13 +127,15 @@ class LLMService:
         temperature: float,
         reasoning_effort: str,
         timeout: httpx.Timeout,
+        include_reasoning: bool = True,
     ) -> tuple[str, dict[str, Any], float]:
         payload: dict[str, Any] = {
             "model": model,
             "input": messages,
             "temperature": temperature,
-            "reasoning": {"effort": reasoning_effort},
         }
+        if include_reasoning:
+            payload["reasoning"] = {"effort": reasoning_effort}
         t_req = time.perf_counter()
         resp = await self._http_client().post(
             f"{self.base_url}/responses",
@@ -145,6 +147,16 @@ class LLMService:
         resp.raise_for_status()
         data = resp.json()
         return self._extract_response_text(data), data, req_elapsed
+
+    @staticmethod
+    def _should_fallback_from_responses(exc: httpx.HTTPStatusError) -> bool:
+        status_code = exc.response.status_code
+        if status_code in {404, 405, 422}:
+            return True
+        if status_code == 400:
+            text = exc.response.text.lower()
+            return any(token in text for token in ("reasoning", "unsupported", "unknown", "parameter", "responses"))
+        return False
 
     async def chat(
         self,
@@ -182,16 +194,48 @@ class LLMService:
                 timeout = httpx.Timeout(
                     connect=30.0, read=read_timeout, write=30.0, pool=30.0,
                 )
-                content, data, req_elapsed = await self._responses_completion(
-                    messages,
-                    model=model,
-                    temperature=temperature,
-                    reasoning_effort=runtime_config.reasoning_effort,
-                    timeout=timeout,
-                )
+                try:
+                    content, data, req_elapsed = await self._responses_completion(
+                        messages,
+                        model=model,
+                        temperature=temperature,
+                        reasoning_effort=runtime_config.reasoning_effort,
+                        timeout=timeout,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    if not self._should_fallback_from_responses(exc):
+                        raise
+                    logger.warning(
+                        "LLM responses endpoint unavailable or incompatible "
+                        "(HTTP %s); retrying without reasoning",
+                        exc.response.status_code,
+                    )
+                    try:
+                        content, data, req_elapsed = await self._responses_completion(
+                            messages,
+                            model=model,
+                            temperature=temperature,
+                            reasoning_effort=runtime_config.reasoning_effort,
+                            timeout=timeout,
+                            include_reasoning=False,
+                        )
+                    except httpx.HTTPStatusError as plain_exc:
+                        if not self._should_fallback_from_responses(plain_exc):
+                            raise
+                        logger.warning(
+                            "LLM responses endpoint still unavailable or incompatible "
+                            "(HTTP %s); retrying chat/completions",
+                            plain_exc.response.status_code,
+                        )
+                        content, data, req_elapsed = await self._chat_completions_fallback(
+                            messages,
+                            model=model,
+                            temperature=temperature,
+                            timeout=timeout,
+                        )
                 if not content:
                     raise EmptyLLMResponseError(
-                        "LLM returned empty assistant content from /responses"
+                        "LLM returned empty assistant content"
                     )
                 total_elapsed = time.perf_counter() - t0
 

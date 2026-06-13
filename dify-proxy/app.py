@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
 
@@ -8,7 +9,22 @@ import httpx
 from fastapi import FastAPI, HTTPException
 
 
-app = FastAPI(title="AI4Sec Dify Proxy")
+_client: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    del app
+    try:
+        yield
+    finally:
+        global _client
+        if _client is not None:
+            await _client.aclose()
+            _client = None
+
+
+app = FastAPI(title="AI4Sec Dify Proxy", lifespan=lifespan)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -37,18 +53,30 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {_api_key()}"}
 
 
-def _client() -> httpx.AsyncClient:
-    timeout = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=120.0)
-    return httpx.AsyncClient(timeout=timeout)
+def _http_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        timeout = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=120.0)
+        _client = httpx.AsyncClient(timeout=timeout)
+    return _client
 
 
 async def _request(method: str, path: str, *, params: dict[str, Any] | None = None, json: Any = None) -> Any:
     url = f"{_dify_base()}/v1{path}"
-    try:
-        async with _client() as client:
-            resp = await client.request(method, url, headers=_headers(), params=params, json=json)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Dify request failed: {exc}") from exc
+    attempts = 2 if method.upper() == "GET" else 1
+    resp: httpx.Response | None = None
+    last_exc: httpx.HTTPError | None = None
+    for attempt in range(attempts):
+        try:
+            resp = await _http_client().request(method, url, headers=_headers(), params=params, json=json)
+            if not (method.upper() == "GET" and resp.status_code >= 500 and attempt + 1 < attempts):
+                break
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if method.upper() != "GET" or attempt + 1 >= attempts:
+                raise HTTPException(status_code=502, detail=f"Dify request failed: {exc}") from exc
+    if resp is None:
+        raise HTTPException(status_code=502, detail=f"Dify request failed: {last_exc}")
 
     if resp.status_code >= 400:
         try:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,7 @@ class LibraryAskRequest(BaseModel):
     language: str = "en"        # en | zh
     llm_model: str = ""
     dataset_id: str = ""
+    graph_only: bool = False
 
 
 class TranslatorRequest(BaseModel):
@@ -205,6 +206,10 @@ class KnowledgeCardBatchMergeRequest(BaseModel):
 class WritingSnippetCreateRequest(BaseModel):
     content: str
     source_card_id: str = ""
+    source_card_ids: list[str] = []
+    evidence_ids: list[str] = []
+    paragraph_plan_json: dict[str, Any] = {}
+    trace_mode: Literal["traceable", "clean"] = "traceable"
     paper_id: str = ""
     citation_key: str = ""
     source_page: int = 0
@@ -215,11 +220,25 @@ class WritingSnippetCreateRequest(BaseModel):
 class WritingSnippetUpdateRequest(BaseModel):
     content: str | None = None
     source_card_id: str | None = None
+    source_card_ids: list[str] | None = None
+    evidence_ids: list[str] | None = None
+    paragraph_plan_json: dict[str, Any] | None = None
+    trace_mode: Literal["traceable", "clean"] | None = None
     paper_id: str | None = None
     citation_key: str | None = None
     source_page: int | None = None
     source_quote: str | None = None
     section_hint: SectionHint | None = None
+
+
+class ComparisonTableRequest(BaseModel):
+    paper_ids: list[str]
+
+
+class RelatedWorkComposeRequest(BaseModel):
+    card_ids: list[str]
+    section_hint: SectionHint = "related_work"
+    trace_mode: Literal["traceable", "clean"] = "traceable"
 
 
 class ReferenceImportRequest(BaseModel):
@@ -442,12 +461,29 @@ class PaperCollectionConfirmResponse(BaseModel):
 
 
 class DiscoveryGapStatusRequest(BaseModel):
-    status: Literal["kept", "needs_more_evidence", "promoted_to_idea", "rejected"]
+    status: Literal[
+        "kept",
+        "candidate",
+        "reviewing",
+        "pursue",
+        "experiment_planned",
+        "needs_more_evidence",
+        "promoted_to_idea",
+        "rejected",
+        "covered",
+    ]
     rejection_reason: str = ""
+    research_question: str = ""
+    target_task: str = ""
+    constraints_json: list[str] = []
+    baseline_plan: str = ""
+    contribution: str = ""
+    target_venue: str = ""
+    minimum_experiment: str = ""
 
 
 class DiscoveryRelationStatusRequest(BaseModel):
-    status: Literal["confirmed", "needs_more_evidence", "rejected", "unverified"]
+    status: Literal["confirmed", "verified", "needs_more_evidence", "rejected", "unverified"]
 
 
 class ModelListResponse(BaseModel):
@@ -550,6 +586,8 @@ class DailyRecommendationListResponse(BaseModel):
 
 
 class DailyRecommendationRefreshResponse(BaseModel):
+    job_id: str = ""
+    status: str = ""
     date: str
     fetched: int = 0
     inserted_or_updated: int = 0
@@ -557,6 +595,8 @@ class DailyRecommendationRefreshResponse(BaseModel):
     skipped: int = 0
     message: str = ""
     errors: list[dict[str, str]] = []
+    started_at: str = ""
+    finished_at: str = ""
 
 
 class DailyRecommendationIngestResponse(BaseModel):
@@ -758,7 +798,7 @@ class DiscoveryEvidenceResponse(BaseModel):
     model_version: str = ""
     prompt_version: str = ""
     status: str = "unverified"
-    revision_history: list[str] = []
+    revision_history: list[dict[str, Any]] = []
     evidence_version: int = 1
 
 
@@ -794,8 +834,10 @@ class DiscoveryEdgeResponse(BaseModel):
     positive_checks: list[str] = []
     negative_checks: list[str] = []
     counter_evidence_ids: list[str] = []
+    comparability_json: dict[str, Any] = {}
     confidence: float = 0.0
     status: str = "unverified"
+    verifier_version: str = ""
     relation_version: int = 1
 
 
@@ -812,6 +854,7 @@ class DiscoveryGapResponse(BaseModel):
     gap_id: str
     title: str
     description: str
+    full_description: str = ""
     score: float
     paper_ids: list[str] = []
     signals: list[str] = []
@@ -819,11 +862,21 @@ class DiscoveryGapResponse(BaseModel):
     hypothesis: str = ""
     support_evidence_ids: list[str] = []
     counter_evidence_ids: list[str] = []
+    related_synthesis_card_ids: list[str] = []
+    related_card_ids: list[str] = []
+    research_question: str = ""
+    target_task: str = ""
+    constraints_json: list[str] = []
+    baseline_plan: str = ""
+    contribution: str = ""
+    target_venue: str = ""
+    history_json: list[dict[str, Any]] = []
     coverage_status: str = "unknown"
     scores: DiscoveryScoreResponse = Field(default_factory=DiscoveryScoreResponse)
     status: str = "candidate"
     rejection_reason: str = ""
     minimum_experiment: str = ""
+    hit_by_paper_ids: list[str] = []
     gap_version: int = 1
 
 
@@ -932,6 +985,8 @@ class KnowledgeCardResponse(BaseModel):
     supporting_card_ids: list[str] = []
     supporting_paper_ids: list[str] = []
     evidence_strength: str = ""
+    card_version: int = 1
+    revision_history: str = "[]"
     reviewed_at: str = ""
     reviewed_by: str = ""
     created_at: str = ""
@@ -951,6 +1006,7 @@ class KnowledgeCardGenerationResponse(BaseModel):
     cards_created: int = 0
     cards_skipped: int = 0
     duplicate_count: int = 0
+    critique_summary_json: str = "{}"
     error_msg: str = ""
     raw_output_json: str = "[]"
     card_ids: list[str] = []
@@ -962,6 +1018,11 @@ class WritingSnippetResponse(BaseModel):
     snippet_id: str
     content: str
     source_card_id: str = ""
+    source_card_ids: list[str] = []
+    evidence_ids: list[str] = []
+    paragraph_plan_json: dict[str, Any] = {}
+    trace_mode: str = "traceable"
+    usage_count: int = 0
     source_card_title: str = ""
     paper_id: str = ""
     paper_title: str = ""
@@ -1011,6 +1072,16 @@ class KnowledgeHealthResponse(BaseModel):
     read_without_notes: int = 0
     reading_without_cards: int = 0
     pending_ai_cards: int = 0
+    verified_cards_without_evidence: int = 0
+    draft_backlog_count: int = 0
+    draft_backlog_avg_age_days: float = 0.0
+    low_quality_ai_candidate_ratio: float = 0.0
+    weak_synthesis_cards: int = 0
+    gaps_missing_support_or_experiment: int = 0
+    writing_snippets_missing_trace: int = 0
+    local_qa_graph_hit_ratio: float = 0.0
+    export_citation_missing_rate: float = 0.0
+    isolated_evidence_count: int = 0
     issues: list[KnowledgeHealthIssueResponse] = []
 
 

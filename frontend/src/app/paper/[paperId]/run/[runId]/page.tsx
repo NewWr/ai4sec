@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   createKnowledgeCard,
@@ -147,7 +147,8 @@ export default function RunPage() {
   const [activeEvidenceAnchorId, setActiveEvidenceAnchorId] = useState("");
   const [pageLoadTime] = useState(() => performance.now());
 
-  const { events, isConnected, isDone, error, connect } = useRunStream();
+const { events, isConnected, isDone, error, connect } = useRunStream();
+  const pollInFlightRef = useRef(false);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -259,33 +260,66 @@ export default function RunPage() {
     }).catch(() => {});
   }, [isDone, runId, pageLoadTime, refreshSyncStatus, applyRunOutput]);
 
-  // Always-on backup polling — runs regardless of SSE state until we have results
+  // Backup polling backs off while SSE is healthy, pauses in background tabs,
+  // and avoids overlapping fetches if the backend is slow.
   useEffect(() => {
     if (markdown) return; // Already got results, stop polling
     if (run?.status === "failed") return; // Run failed, stop polling
 
-    const interval = setInterval(() => {
-      getRun(runId).then((r) => {
+    let cancelled = false;
+    let timeoutId: number | null = null;
+    const pollMs = isConnected ? 30000 : 5000;
+
+    const runPoll = async () => {
+      if (cancelled || pollInFlightRef.current || document.visibilityState === "hidden") return;
+      pollInFlightRef.current = true;
+      const controller = new AbortController();
+      timeoutId = window.setTimeout(() => controller.abort(), 10000);
+      try {
+        const r = await getRun(runId, controller.signal);
+        if (cancelled) return;
         setRun(r);
         if (r.status === "done") {
           console.log(`[RunPage] Polling detected completion, fetching output...`);
-          getRunOutput(runId).then((o) => {
-            console.log(`[RunPage] Poll -> getRunOutput: markdown=${o.markdown.length} chars`);
-            applyRunOutput(o);
-            refreshSyncStatus();
-          }).catch(() => {});
+          const o = await getRunOutput(runId, controller.signal);
+          if (cancelled) return;
+          console.log(`[RunPage] Poll -> getRunOutput: markdown=${o.markdown.length} chars`);
+          applyRunOutput(o);
+          refreshSyncStatus();
         }
-      }).catch(() => {});
-      // Re-fetch paper to pick up venue/rank data from enrich_metadata
-      if (!paper?.venue || (!paper?.sci_rank && !paper?.ccf_rank)) {
-        getPaper(paperId).then((p) => setPaper(p)).catch(() => {});
+        // Re-fetch paper to pick up venue/rank data from enrich_metadata
+        if (!paper?.venue || (!paper?.sci_rank && !paper?.ccf_rank)) {
+          const p = await getPaper(paperId, controller.signal);
+          if (!cancelled) setPaper(p);
+        }
+      } catch {
+        // Normal during aborts, transient 429 backoff, and page transitions.
+      } finally {
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+        timeoutId = null;
+        pollInFlightRef.current = false;
       }
-    }, 5000);
+    };
 
-    return () => clearInterval(interval);
-  }, [runId, paperId, markdown, run?.status, paper?.venue, refreshSyncStatus, applyRunOutput]);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void runPoll();
+    };
+    void runPoll();
+    const interval = setInterval(runPoll, pollMs);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
-  const evidenceAnchors = (outputJson?.evidence_anchors || []) as EvidenceAnchor[];
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      clearInterval(interval);
+    };
+  }, [runId, paperId, markdown, run?.status, paper?.venue, paper?.sci_rank, paper?.ccf_rank, isConnected, refreshSyncStatus, applyRunOutput]);
+
+  const evidenceAnchors = useMemo(
+    () => (outputJson?.evidence_anchors || []) as EvidenceAnchor[],
+    [outputJson?.evidence_anchors],
+  );
 
   const handleCitationClick = useCallback((page: number, anchorId?: string) => {
     setTargetPage(page);
@@ -505,26 +539,32 @@ export default function RunPage() {
     setTargetPage(annotation.page || undefined);
   }, []);
 
-  const savedHighlights: PdfHighlight[] = annotations
-    .map((annotation) => ({
-      id: annotation.annotation_id,
-      ranges: parseAnnotationRanges(annotation),
-      color: annotation.color,
-      active: activeDraft?.linked_annotation_id === annotation.annotation_id,
-    }))
-    .filter((highlight) => highlight.ranges.length > 0);
-  const highlights: PdfHighlight[] = activeDraft && !activeDraft.linked_annotation_id && activeDraft.ranges.length > 0
-    ? [
-        ...savedHighlights,
-        { id: activeDraft.draft_id, ranges: activeDraft.ranges, color: "draft", active: true },
-      ]
-    : savedHighlights;
+  const savedHighlights: PdfHighlight[] = useMemo(
+    () => annotations
+      .map((annotation) => ({
+        id: annotation.annotation_id,
+        ranges: parseAnnotationRanges(annotation),
+        color: annotation.color,
+        active: activeDraft?.linked_annotation_id === annotation.annotation_id,
+      }))
+      .filter((highlight) => highlight.ranges.length > 0),
+    [activeDraft?.linked_annotation_id, annotations],
+  );
+  const highlights: PdfHighlight[] = useMemo(
+    () => activeDraft && !activeDraft.linked_annotation_id && activeDraft.ranges.length > 0
+      ? [
+          ...savedHighlights,
+          { id: activeDraft.draft_id, ranges: activeDraft.ranges, color: "draft", active: true },
+        ]
+      : savedHighlights,
+    [activeDraft, savedHighlights],
+  );
 
   // Progress steps merged from two sources:
   //   1. persisted `run.progress_json` (full history, even if SSE wasn't connected)
   //   2. live SSE events received this session
   // Deduplicate by step name, keeping the latest status per step.
-  const progressSteps = (() => {
+  const progressSteps = useMemo(() => {
     const persisted: ProgressEntry[] = (() => {
       if (!run?.progress_json) return [];
       try {
@@ -544,7 +584,7 @@ export default function RunPage() {
       if (s && typeof s.step === "string") map.set(s.step, s);
     }
     return Array.from(map.values());
-  })();
+  }, [events, run?.progress_json]);
 
   const currentStep = progressSteps.length > 0
     ? progressSteps[progressSteps.length - 1]
@@ -557,13 +597,13 @@ export default function RunPage() {
   return (
     <div data-run-root className="fixed inset-x-0 bottom-0 top-14 flex overflow-hidden flex-col">
       {/* Header bar */}
-      <div className="flex shrink-0 items-center gap-4 border-b border-border bg-card/60 px-5 py-2.5">
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border bg-card/60 px-4 py-2.5 sm:px-5 lg:flex-row lg:items-center lg:gap-4">
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">
             {paper?.title || paperId}
           </p>
-          <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="truncate">
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="min-w-0 break-all">
               {t("run.mode")}: <span className="font-medium text-foreground/80">{run?.mode || "..."}</span>
               <span className="mx-1.5 opacity-40">·</span>
               {runId}
@@ -571,11 +611,11 @@ export default function RunPage() {
             {paper && <RankBadges venue={paper.venue} year={paper.year} sciRank={paper.sci_rank} ccfRank={paper.ccf_rank} />}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex max-w-full shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden [scrollbar-width:none] sm:gap-3 [&::-webkit-scrollbar]:hidden">
           {markdown && (
             <button
               onClick={handleExportMarkdown}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
               title={t("run.export_md")}
             >
               <IconDownload className="text-[15px]" />
@@ -585,25 +625,25 @@ export default function RunPage() {
           {isComplete && (
             <a
               href={`/knowledge?run_id=${encodeURIComponent(runId)}&status=draft&created_by=ai`}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
             >
               AI 卡片 {aiDraftCardCount}
             </a>
           )}
           {isRunning && (
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-primary">
+            <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-primary">
               <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
               {currentStep ? stepLabel(currentStep.step) : t("run.status.running")}
             </span>
           )}
           {isComplete && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-sm font-medium text-success">
+            <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-success/10 px-2.5 py-1 text-sm font-medium text-success">
               <IconCheck className="text-[15px]" />
               {t("run.status.complete")}
             </span>
           )}
           {isFailed && (
-            <span className="text-sm text-destructive">
+            <span className="shrink-0 whitespace-nowrap text-sm text-destructive">
               {error || run?.error_msg || t("run.status.unknown")}
             </span>
           )}
@@ -641,6 +681,8 @@ export default function RunPage() {
           while the left side shows progress / failure / markdown as state evolves. */}
       <div data-run-main className="min-h-0 flex-1 overflow-hidden">
         <SplitPane
+          mobileLeftHeight={62}
+          mobileRightHeight={78}
           rightPaneClassName="min-h-0 overflow-hidden"
           left={
             markdown ? (
@@ -702,8 +744,8 @@ export default function RunPage() {
             )
           }
           right={
-            <div data-split-right className="flex h-full min-h-0 overflow-hidden">
-              <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div data-split-right className="flex h-full min-h-0 flex-col overflow-y-auto overflow-x-hidden lg:flex-row lg:overflow-hidden">
+              <div className="h-[72vh] min-h-[24rem] min-w-0 shrink-0 overflow-hidden lg:h-full lg:min-h-0 lg:flex-1">
                 <PdfViewer
                   url={getPaperPdfUrl(paperId)}
                   targetPage={targetPage}
@@ -717,7 +759,7 @@ export default function RunPage() {
                 />
               </div>
               {assetPanelOpen ? (
-                <div className="w-[23rem] shrink-0 border-l border-border">
+                <div className="h-[26rem] w-full shrink-0 border-t border-border lg:h-auto lg:w-[23rem] lg:border-l lg:border-t-0">
                   <ReadingAssetPanel
                     note={note}
                     annotations={annotations}
@@ -745,10 +787,10 @@ export default function RunPage() {
               ) : (
                 <button
                   onClick={() => setAssetPanelOpen(true)}
-                  className="flex w-11 shrink-0 items-center justify-center border-l border-border bg-card text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="flex h-10 w-full shrink-0 items-center justify-center border-t border-border bg-card text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground lg:h-auto lg:w-11 lg:border-l lg:border-t-0"
                   title="显示阅读资产"
                 >
-                  <span className="[writing-mode:vertical-rl]">阅读资产</span>
+                  <span className="lg:[writing-mode:vertical-rl]">阅读资产</span>
                 </button>
               )}
             </div>

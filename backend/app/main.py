@@ -50,6 +50,12 @@ async def lifespan(app: FastAPI):
     set_db_path(data_dir / "app.db")
     await init_db()
     await open_db()
+    try:
+        from app.services.evidence_store import backfill_card_evidence
+
+        await backfill_card_evidence()
+    except Exception:
+        logger.exception("backfill_card_evidence failed (non-fatal)")
     await init_http_clients()
     await start_daily_scheduler()
     logger.info(f"Database initialized at {data_dir / 'app.db'}")

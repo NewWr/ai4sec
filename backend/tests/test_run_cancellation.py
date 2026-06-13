@@ -35,6 +35,10 @@ class RunCancellationTests(unittest.IsolatedAsyncioTestCase):
         from app.api import runs
 
         await self._insert_run("run-cancel", "running")
+        await db.execute(
+            "INSERT INTO mineru_parses (parse_id, paper_id, status) VALUES (?, ?, ?)",
+            ("parse-cancel", "paper", "running"),
+        )
         task_started = asyncio.Event()
 
         async def long_running() -> None:
@@ -45,12 +49,15 @@ class RunCancellationTests(unittest.IsolatedAsyncioTestCase):
         await task_started.wait()
         queue: asyncio.Queue = asyncio.Queue()
 
-        with patch.dict(runs._run_tasks, {"run-cancel": task}, clear=True), patch.dict(
+        with patch("app.api.runs.cancel_parse", return_value=True) as cancel_parse, patch.dict(
+            runs._run_tasks, {"run-cancel": task}, clear=True
+        ), patch.dict(
             runs._run_queues, {"run-cancel": {queue}}, clear=True
         ):
             response = await runs.dismiss_run.__wrapped__(SimpleNamespace(), "run-cancel", owner_token="owner")
             self.assertNotIn("run-cancel", runs._run_tasks)
             self.assertNotIn("run-cancel", runs._run_queues)
+            cancel_parse.assert_called_once_with("parse-cancel")
 
         self.assertEqual(response.status, "failed")
         self.assertEqual(response.error_msg, "Dismissed by user")
@@ -67,6 +74,9 @@ class RunCancellationTests(unittest.IsolatedAsyncioTestCase):
         row = await db.fetch_one("SELECT status, error_msg FROM runs WHERE run_id = ?", ("run-cancel",))
         self.assertEqual(row["status"], "failed")
         self.assertEqual(row["error_msg"], "Dismissed by user")
+        parse = await db.fetch_one("SELECT status, error_msg FROM mineru_parses WHERE parse_id = ?", ("parse-cancel",))
+        self.assertEqual(parse["status"], "failed")
+        self.assertEqual(parse["error_msg"], "Cancelled by user")
 
     async def test_execute_run_cleans_queue_when_cancelled_waiting_for_slot(self) -> None:
         from app.api import runs

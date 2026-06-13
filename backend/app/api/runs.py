@@ -16,6 +16,7 @@ from app.rate_limit import limiter
 from app.models.schemas import RecentRunResponse, RunCreate, RunOutputResponse, RunResponse
 from app.services.evidence_anchorer import ANCHOR_SCHEMA_VERSION, build_evidence_anchors
 from app.services.llm_runtime_config import get_llm_runtime_config
+from app.services.mineru_adapter import cancel_parse
 from app.services.paper_collections import load_paper_ir_from_blocks
 from app.workflows.main_graph import build_main_graph
 from app.workflows.progress import emit_progress, persist_run_event
@@ -125,9 +126,6 @@ async def _publish_live_message(run_id: str, message: dict[str, Any]) -> None:
     subscribers = _run_queues.get(run_id)
     if not subscribers:
         return
-    if hasattr(subscribers, "put"):
-        await subscribers.put(message)
-        return
     for queue in list(subscribers):
         await queue.put(message)
 
@@ -141,9 +139,6 @@ async def _publish_run_event(run_id: str, event: str, data: dict[str, Any]) -> d
 
 async def _close_live_streams(run_id: str) -> None:
     subscribers = _run_queues.pop(run_id, set())
-    if hasattr(subscribers, "put"):
-        await subscribers.put(None)
-        return
     for queue in list(subscribers):
         await queue.put(None)
 
@@ -337,7 +332,7 @@ async def _execute_run(
 
 
 @router.get("/runs/recent", response_model=list[RecentRunResponse])
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def list_recent_runs(
     request: Request,
     owner_token: str = "",
@@ -383,7 +378,7 @@ async def list_recent_runs(
 
 
 @router.get("/runs/{run_id}", response_model=RunResponse)
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def get_run(request: Request, run_id: str):
     row = await db.fetch_one("SELECT * FROM runs WHERE run_id = ?", (run_id,))
     if not row:
@@ -435,7 +430,7 @@ async def dismiss_run(request: Request, run_id: str, owner_token: str = ""):
     runs are returned unchanged.
     """
     owner_token = (owner_token or "").strip()[:_MAX_OWNER_TOKEN_LEN]
-    row = await db.fetch_one("SELECT status, owner_token FROM runs WHERE run_id = ?", (run_id,))
+    row = await db.fetch_one("SELECT status, owner_token, paper_id FROM runs WHERE run_id = ?", (run_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
     # Don't reveal existence of runs the caller doesn't own.
@@ -443,6 +438,23 @@ async def dismiss_run(request: Request, run_id: str, owner_token: str = ""):
         raise HTTPException(status_code=404, detail="Run not found")
 
     if row["status"] in ("pending", "running"):
+        parse = await db.fetch_one(
+            """
+            SELECT parse_id
+              FROM mineru_parses
+             WHERE paper_id = ? AND status IN ('pending', 'running')
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (row["paper_id"],),
+        )
+        if parse and parse.get("parse_id"):
+            parse_id = str(parse["parse_id"])
+            if cancel_parse(parse_id):
+                await db.execute(
+                    "UPDATE mineru_parses SET status = 'failed', error_msg = 'Cancelled by user', updated_at = datetime('now') WHERE parse_id = ?",
+                    (parse_id,),
+                )
         await db.execute(
             "UPDATE runs SET status = 'failed', error_msg = 'Dismissed by user', "
             "finished_at = datetime('now') WHERE run_id = ? AND status IN ('pending', 'running')",
@@ -474,48 +486,58 @@ async def stream_run(request: Request, run_id: str, since_seq: int = 0):
         subscribers = _run_queues.setdefault(run_id, set())
         subscribers.add(queue)
         deadline = time.monotonic() + _STREAM_TIMEOUT_SECONDS
+        next_status_check = time.monotonic()
         try:
+            for msg in await _fetch_run_event_messages(run_id, last_seq):
+                last_seq = max(last_seq, int(msg.get("seq") or 0))
+                yield _sse_frame(msg)
+                if msg.get("event") in ("done", "error", "cancelled"):
+                    yield _sse_frame({"event": "end", "data": {}})
+                    return
+
             while True:
-                for msg in await _fetch_run_event_messages(run_id, last_seq):
-                    last_seq = max(last_seq, int(msg.get("seq") or 0))
-                    yield _sse_frame(msg)
-                    if msg.get("event") in ("done", "error", "cancelled"):
+                now = time.monotonic()
+                if now >= next_status_check:
+                    current = await db.fetch_one("SELECT status, error_msg FROM runs WHERE run_id = ?", (run_id,))
+                    next_status_check = now + 30.0
+                    if not current:
+                        yield _sse_frame({"event": "error", "data": {"error": "Run not found"}})
+                        yield _sse_frame({"event": "end", "data": {}})
+                        return
+                    if current.get("status") not in ("pending", "running"):
+                        terminal = _terminal_event_from_status(run_id, current)
+                        terminal["seq"] = last_seq
+                        yield _sse_frame(terminal)
+                        yield _sse_frame({"event": "end", "data": {}})
+                        return
+                    if run_id not in _run_tasks:
+                        await db.execute(
+                            "UPDATE runs SET status = 'failed', error_msg = 'Interrupted (task no longer running)', "
+                            "finished_at = datetime('now') WHERE run_id = ? AND status IN ('pending', 'running')",
+                            (run_id,),
+                        )
+                        terminal = {
+                            "event": "error",
+                            "data": {"error": "Interrupted (task no longer running)", "status": "failed"},
+                            "seq": last_seq,
+                        }
+                        yield _sse_frame(terminal)
                         yield _sse_frame({"event": "end", "data": {}})
                         return
 
-                current = await db.fetch_one("SELECT status, error_msg FROM runs WHERE run_id = ?", (run_id,))
-                if not current:
-                    yield _sse_frame({"event": "error", "data": {"error": "Run not found"}})
-                    yield _sse_frame({"event": "end", "data": {}})
-                    return
-                if current.get("status") not in ("pending", "running"):
-                    terminal = _terminal_event_from_status(run_id, current)
-                    terminal["seq"] = last_seq
-                    yield _sse_frame(terminal)
-                    yield _sse_frame({"event": "end", "data": {}})
-                    return
-                if run_id not in _run_tasks:
-                    await db.execute(
-                        "UPDATE runs SET status = 'failed', error_msg = 'Interrupted (task no longer running)', "
-                        "finished_at = datetime('now') WHERE run_id = ? AND status IN ('pending', 'running')",
-                        (run_id,),
-                    )
-                    terminal = {
-                        "event": "error",
-                        "data": {"error": "Interrupted (task no longer running)", "status": "failed"},
-                        "seq": last_seq,
-                    }
-                    yield _sse_frame(terminal)
-                    yield _sse_frame({"event": "end", "data": {}})
-                    return
-
-                timeout = min(_STREAM_POLL_SECONDS, max(0.0, deadline - time.monotonic()))
+                timeout = min(_STREAM_POLL_SECONDS, max(0.0, next_status_check - time.monotonic()), max(0.0, deadline - time.monotonic()))
                 if timeout <= 0:
                     yield _sse_frame({"event": "timeout", "data": {}})
                     return
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    for msg in await _fetch_run_event_messages(run_id, last_seq):
+                        last_seq = max(last_seq, int(msg.get("seq") or 0))
+                        yield _sse_frame(msg)
+                        if msg.get("event") in ("done", "error", "cancelled"):
+                            yield _sse_frame({"event": "end", "data": {}})
+                            return
                     continue
                 if msg is None:
                     continue

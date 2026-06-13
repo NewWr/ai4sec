@@ -54,6 +54,21 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function generationSummaryText(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw || "{}") as {
+      total_candidates?: number;
+      critique_low_count?: number;
+      critique_rejection_rate?: number;
+    };
+    if (!parsed.total_candidates) return "";
+    const rate = Math.round((parsed.critique_rejection_rate || 0) * 100);
+    return `批判过滤：候选 ${parsed.total_candidates}，低分 ${parsed.critique_low_count || 0}，淘汰率 ${rate}%`;
+  } catch {
+    return "";
+  }
+}
+
 export default function KnowledgePage() {
   const [cards, setCards] = useState<KnowledgeCard[]>([]);
   const [snippets, setSnippets] = useState<WritingSnippet[]>([]);
@@ -227,7 +242,8 @@ export default function KnowledgePage() {
         force: false,
         max_cards: 12,
       });
-      setExportText(`生成状态：${res.status}\n新建 ${res.cards_created} 张，跳过 ${res.cards_skipped} 张，重复 ${res.duplicate_count} 张。\n${res.error_msg || ""}`);
+      const critiqueSummary = generationSummaryText(res.critique_summary_json);
+      setExportText(`生成状态：${res.status}\n新建 ${res.cards_created} 张，跳过 ${res.cards_skipped} 张，重复 ${res.duplicate_count} 张。\n${critiqueSummary}\n${res.error_msg || ""}`);
       if (res.run_id && !runId) setRunId(res.run_id);
       setCreatedBy("ai");
       setStatus("draft");

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import shutil
@@ -53,6 +54,7 @@ from app.services.paper_collections import (
     update_collection,
 )
 from app.services.research_discovery import build_research_discovery
+from app.services import research_discovery
 
 router = APIRouter(tags=["papers"])
 
@@ -69,6 +71,14 @@ _IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
+
+
+def _sha1_file(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _sync_status_from_row(paper_id: str, row: dict | None) -> DifySyncStatusResponse:
@@ -213,7 +223,6 @@ async def upload_paper(request: Request, file: UploadFile):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     upload_dir = settings.data_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha1()
     header = b""
     total = 0
     tmp_path = Path(tempfile.mkstemp(prefix="paper-", suffix=".pdf.part", dir=upload_dir)[1])
@@ -231,14 +240,13 @@ async def upload_paper(request: Request, file: UploadFile):
                         status_code=413,
                         detail=f"File too large (max {MAX_UPLOAD_SIZE // (1024 * 1024)} MB)",
                     )
-                digest.update(chunk)
                 out.write(chunk)
         if total == 0:
             raise HTTPException(status_code=400, detail="Empty file")
         if not header.lstrip().startswith(b"%PDF"):
             raise HTTPException(status_code=400, detail="File is not a valid PDF")
 
-        paper_id = digest.hexdigest()
+        paper_id = await asyncio.to_thread(_sha1_file, tmp_path)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
@@ -618,19 +626,11 @@ async def get_papers_discovery(request: Request, limit: int = 200):
 @router.post("/papers/discovery/gaps/{gap_id}/status", response_model=PapersDiscoveryResponse)
 @limiter.limit("30/minute")
 async def update_discovery_gap_status(request: Request, gap_id: str, req: DiscoveryGapStatusRequest):
-    row = await db.fetch_one("SELECT gap_id FROM research_gaps WHERE gap_id = ?", (gap_id,))
-    if not row:
-        raise HTTPException(status_code=404, detail="Gap not found")
-    await db.execute(
-        """
-        UPDATE research_gaps
-           SET status = ?,
-               rejection_reason = ?,
-               updated_at = datetime('now')
-         WHERE gap_id = ?
-        """,
-        (req.status, req.rejection_reason, gap_id),
-    )
+    try:
+        await research_discovery.update_gap_status(gap_id, req.model_dump())
+    except ValueError as exc:
+        status = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     return await build_research_discovery(200)
 
 

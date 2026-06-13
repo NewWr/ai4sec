@@ -4,8 +4,6 @@ import json
 import logging
 from typing import Any
 
-import aiosqlite
-
 from app.db import database as db
 
 logger = logging.getLogger("scholar.progress")
@@ -18,23 +16,9 @@ async def persist_run_event(run_id: str, event_type: str, data: dict[str, Any]) 
     payload = json.dumps(data, ensure_ascii=False)
     event_type = (event_type or "progress").strip() or "progress"
     try:
-        async with aiosqlite.connect(db.get_db_path()) as conn:
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("BEGIN IMMEDIATE")
-            cursor = await conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_progress_events WHERE run_id = ?",
-                (run_id,),
-            )
-            row = await cursor.fetchone()
-            seq = int(row[0] if row else 1)
-            await conn.execute(
-                "INSERT INTO run_progress_events (run_id, seq, event_type, data_json) VALUES (?, ?, ?, ?)",
-                (run_id, seq, event_type, payload),
-            )
-            await conn.commit()
-            return seq
+        return await db.persist_run_event(run_id, event_type, payload)
     except Exception as e:
-        logger.debug("persist_run_event failed run=%s event=%s: %s", run_id, event_type, e)
+        logger.warning("persist_run_event failed run=%s event=%s: %s", run_id, event_type, e)
         return 0
 
 
@@ -63,11 +47,8 @@ async def emit_progress(run_id: str, step: str, status: str, **extra: Any) -> No
         subscribers = _run_queues.get(run_id)
         if subscribers:
             message = {"event": "progress", "data": payload, "seq": seq}
-            if hasattr(subscribers, "put"):
-                await subscribers.put(message)
-            else:
-                for queue in list(subscribers):
-                    await queue.put(message)
+            for queue in list(subscribers):
+                await queue.put(message)
     except Exception as e:
         logger.debug("emit_progress: queue push failed run=%s step=%s: %s", run_id, step, e)
 

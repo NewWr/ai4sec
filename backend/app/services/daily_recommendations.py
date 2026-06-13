@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import asyncio
 import hashlib
 import json
 import logging
@@ -17,6 +18,7 @@ from app.services.daily_recommendation_scoring import DEFAULT_TOPICS, score_pape
 from app.services.http_clients import get_default_http_client
 from app.services.knowledge_spaces import DAILY_SOURCE_SPACE_ID, add_item_to_space
 from app.services.paper_collections import assign_paper_to_collection, ensure_default_collection
+from app.services.recommendation_behavior import build_behavior_terms, match_research_gaps_for_paper
 from app.services.translation_cache import translate_text
 
 logger = logging.getLogger("scholar.daily")
@@ -152,17 +154,19 @@ async def _translate_candidate(paper: ArxivPaper) -> tuple[str, str, str, str]:
     if not settings.daily_recommendation_translate_enabled:
         return paper.title, paper.abstract, "skipped", "skipped"
     target = settings.daily_recommendation_translate_target or "zh"
-    title_res = await translate_text(
-        paper.title,
-        source_lang="en",
-        target_lang=target,
-        provider="deeplx",
-    )
-    abstract_res = await translate_text(
-        paper.abstract,
-        source_lang="en",
-        target_lang=target,
-        provider="deeplx",
+    title_res, abstract_res = await asyncio.gather(
+        translate_text(
+            paper.title,
+            source_lang="en",
+            target_lang=target,
+            provider="deeplx",
+        ),
+        translate_text(
+            paper.abstract,
+            source_lang="en",
+            target_lang=target,
+            provider="deeplx",
+        ),
     )
     return title_res.translated_text, abstract_res.translated_text, title_res.status, abstract_res.status
 
@@ -186,6 +190,16 @@ async def refresh_daily_recommendations(
     kept = 0
     skipped = 0
     errors: list[dict[str, str]] = []
+    translate_semaphore = asyncio.Semaphore(4)
+    try:
+        behavior_terms = await build_behavior_terms()
+    except Exception as exc:
+        logger.warning("Daily refresh behavior profile unavailable: %s", exc)
+        behavior_terms = []
+
+    async def translate_candidate_limited(paper: ArxivPaper) -> tuple[str, str, str, str]:
+        async with translate_semaphore:
+            return await _translate_candidate(paper)
 
     for topic_row in topics:
         config = dict(topic_row.get("config") or {})
@@ -237,12 +251,27 @@ async def refresh_daily_recommendations(
                 primary_category=paper.primary_category,
                 topic=config,
                 feedback_penalty=penalty,
+                behavior_terms=behavior_terms,
                 default_min_score=float(settings.daily_recommendation_min_score),
             )
             if not score.keep:
                 skipped += 1
                 continue
-            title_zh, abstract_zh, title_status, abstract_status = await _translate_candidate(paper)
+            matched_gaps = await match_research_gaps_for_paper(
+                paper_key=paper.arxiv_id,
+                title=paper.title,
+                abstract=paper.abstract,
+            )
+            score_detail = dict(score.detail)
+            reason = score.reason
+            if matched_gaps:
+                score_detail["matched_gaps"] = matched_gaps
+                score_detail["gap_hit_count"] = len(matched_gaps)
+                reason = f"{reason}；命中想法 " + ", ".join(
+                    str(item.get("title") or item.get("gap_id") or "")[:40]
+                    for item in matched_gaps[:2]
+                )
+            title_zh, abstract_zh, title_status, abstract_status = await translate_candidate_limited(paper)
             item_id = _item_id(paper.arxiv_id, topic_row["topic_id"], fetched_date)
             current_status = str((existing or {}).get("status") or "candidate")
             if current_status not in VALID_STATUSES:
@@ -291,8 +320,8 @@ async def refresh_daily_recommendations(
                     paper.arxiv_url,
                     paper.pdf_url,
                     score.score,
-                    _json_dumps(score.detail),
-                    score.reason,
+                    _json_dumps(score_detail),
+                    reason,
                     title_status,
                     abstract_status,
                     current_status,

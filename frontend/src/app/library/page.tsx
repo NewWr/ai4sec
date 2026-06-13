@@ -58,6 +58,7 @@ export default function LibraryPage() {
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<LibraryAskResponse | null>(null);
   const [asking, setAsking] = useState(false);
+  const [askScope, setAskScope] = useState<"hybrid" | "graph_only">("hybrid");
 
   // Browse documents
   const [docs, setDocs] = useState<LibraryDocument[]>([]);
@@ -204,10 +205,6 @@ export default function LibraryPage() {
 
   const runAsk = useCallback(async () => {
     const q = question.trim();
-    if (libraryEnabled !== true) {
-      if (libraryEnabled === false) setError(t("library.disabled"));
-      return;
-    }
     if (!q) {
       setError(t("library.empty_question"));
       return;
@@ -221,6 +218,7 @@ export default function LibraryPage() {
         language: locale,
         top_k: 10,
         dataset_id: datasetId,
+        graph_only: libraryEnabled !== true || askScope === "graph_only",
       });
       setAnswer(res);
     } catch (err) {
@@ -228,18 +226,21 @@ export default function LibraryPage() {
     } finally {
       setAsking(false);
     }
-  }, [question, method, datasetId, locale, libraryEnabled, t]);
+  }, [question, method, datasetId, locale, libraryEnabled, askScope, t]);
 
   const onLibraryCitationClick = useCallback(
     (idx: number) => {
       const src = answer?.sources.find((s) => s.idx === idx);
-      if (src) openDoc(src.document_id, src.document_name);
+      if (src && src.source_type === "dify") openDoc(src.document_id, src.document_name);
     },
     [answer, openDoc],
   );
 
   const slowHint = method === "semantic_search" || method === "hybrid_search";
-  const needsDify = tab === "ask" || searchScope === "dify";
+  const needsDify = tab === "search" && searchScope === "dify";
+  const showDifySearchControls = tab === "search" && searchScope === "dify";
+  const showDifyAskControls = tab === "ask" && libraryEnabled === true && askScope === "hybrid";
+  const showSlowHint = slowHint && (showDifySearchControls || showDifyAskControls);
 
   const saveLocalCard = useCallback(async (result: LocalSearchResult) => {
     if (result.result_type !== "fragment") {
@@ -387,7 +388,6 @@ export default function LibraryPage() {
                     <textarea
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
-                      disabled={libraryEnabled !== true}
                       onKeyDown={(e) => {
                         if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                           e.preventDefault();
@@ -401,7 +401,7 @@ export default function LibraryPage() {
                     <div className="flex justify-end">
                       <button
                         onClick={runAsk}
-                        disabled={asking || libraryEnabled !== true}
+                        disabled={asking}
                         className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
                       >
                         {asking ? t("library.thinking") : t("library.run_ask")}
@@ -429,10 +429,24 @@ export default function LibraryPage() {
                         </select>
                       </div>
                     )}
-                    {searchScope === "dify" && datasetSelect}
-                    {searchScope === "dify" && methodSelect}
+                    {tab === "ask" && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{t("library.ask_scope_label")}</span>
+                        <select
+                          value={libraryEnabled === true ? askScope : "graph_only"}
+                          disabled={libraryEnabled !== true}
+                          onChange={(e) => setAskScope(e.target.value as "hybrid" | "graph_only")}
+                          className="rounded-lg border border-border bg-card px-2 py-1.5 text-sm"
+                        >
+                          <option value="hybrid">{t("library.ask_scope.hybrid")}</option>
+                          <option value="graph_only">{t("library.ask_scope.graph_only")}</option>
+                        </select>
+                      </div>
+                    )}
+                    {(showDifySearchControls || showDifyAskControls) && datasetSelect}
+                    {(showDifySearchControls || showDifyAskControls) && methodSelect}
                   </div>
-                  {slowHint && (
+                  {showSlowHint && (
                     <span className="text-right text-xs text-muted-foreground">
                       {t("library.method_slow_hint")}
                     </span>
@@ -536,13 +550,19 @@ export default function LibraryPage() {
                           {answer.sources.map((s) => (
                             <button
                               key={s.idx}
-                              onClick={() => openDoc(s.document_id, s.document_name)}
-                              className="flex w-full items-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40"
+                              onClick={() => {
+                                if (s.source_type === "dify") openDoc(s.document_id, s.document_name);
+                              }}
+                              className="flex w-full items-start gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40 disabled:cursor-default"
+                              disabled={s.source_type !== "dify"}
                             >
                               <span className="mt-0.5 shrink-0 font-mono text-xs text-primary">
                                 L{s.idx}
                               </span>
                               <span className="min-w-0 flex-1 truncate">{s.document_name}</span>
+                              <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                                {s.source_type || "dify"}
+                              </span>
                               {fmtScore(s.score) && (
                                 <span className="shrink-0 text-xs text-muted-foreground">
                                   {fmtScore(s.score)}

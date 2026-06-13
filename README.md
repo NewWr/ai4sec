@@ -187,6 +187,14 @@ ai4sec/
 └── docs/             # 发布与部署说明
 ```
 
+## 公开发布与隐私
+
+不要提交 `.env`、`docker-data/`、`backend/data/`、`dify-rag/`、PDF、数据库或任何 API Key。本仓库提供 `scripts/check_public_release.sh` 做发布前检查：
+
+```bash
+scripts/check_public_release.sh
+```
+
 ## 许可证
 
 本项目以 [MIT License](./LICENSE) 开源。

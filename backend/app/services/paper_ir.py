@@ -2,11 +2,40 @@ from __future__ import annotations
 
 import json
 import re
+from collections import OrderedDict
+from hashlib import sha1
 from pathlib import Path
+from typing import Any
 
 from app.db import database as db
 from app.models.paper_ir import Block, PaperIR, Section
 from app.services.qa_retrieval import store_paper_nodes
+
+_IR_CACHE_MAX = 8
+_ir_cache: OrderedDict[str, tuple[str, PaperIR]] = OrderedDict()
+
+
+def get_cached_paper_ir(state: dict[str, Any]) -> PaperIR:
+    run_id = str(state.get("run_id") or state.get("paper_id") or "")
+    raw = str(state.get("paper_ir_json") or "")
+    if not raw:
+        raise ValueError("paper_ir_json is empty")
+    digest = sha1(raw.encode("utf-8")).hexdigest()
+    cached = _ir_cache.get(run_id)
+    if cached and cached[0] == digest:
+        _ir_cache.move_to_end(run_id)
+        return cached[1]
+    paper_ir = PaperIR.model_validate_json(raw)
+    _ir_cache[run_id] = (digest, paper_ir)
+    _ir_cache.move_to_end(run_id)
+    while len(_ir_cache) > _IR_CACHE_MAX:
+        _ir_cache.popitem(last=False)
+    return paper_ir
+
+
+def clear_cached_paper_ir(run_id: str) -> None:
+    if run_id:
+        _ir_cache.pop(run_id, None)
 
 
 def _coerce_caption(value: object) -> str:

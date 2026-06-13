@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunStreamUrl } from "@/lib/api";
 import type { SSEEvent } from "@/lib/types";
 
+const RECONNECT_WINDOW_MS = 2 * 60 * 1000;
+const RECONNECT_MAX_DELAY_MS = 8000;
+
 interface UseRunStreamReturn {
   events: SSEEvent[];
   isConnected: boolean;
@@ -21,6 +24,7 @@ export function useRunStream(): UseRunStreamReturn {
   const reconnectTimerRef = useRef<number | null>(null);
   const activeRunIdRef = useRef<string>("");
   const reconnectAttemptsRef = useRef(0);
+  const reconnectWindowStartRef = useRef(0);
   const lastEventIdRef = useRef(0);
   const connectTimeRef = useRef<number>(0);
 
@@ -46,6 +50,7 @@ export function useRunStream(): UseRunStreamReturn {
       setError(null);
       lastEventIdRef.current = 0;
       reconnectAttemptsRef.current = 0;
+      reconnectWindowStartRef.current = performance.now();
       activeRunIdRef.current = runId;
     }
 
@@ -103,10 +108,15 @@ export function useRunStream(): UseRunStreamReturn {
       console.error(`[SSE +${elapsed}s] Connection error`, e);
       setIsConnected(false);
       closeSource();
-      if (activeRunIdRef.current !== runId || reconnectAttemptsRef.current >= 5) return;
+      const now = performance.now();
+      if (!reconnectWindowStartRef.current || now - reconnectWindowStartRef.current > RECONNECT_WINDOW_MS) {
+        reconnectWindowStartRef.current = now;
+        reconnectAttemptsRef.current = 0;
+      }
+      if (activeRunIdRef.current !== runId) return;
 
       reconnectAttemptsRef.current += 1;
-      const delay = Math.min(8000, 500 * 2 ** (reconnectAttemptsRef.current - 1));
+      const delay = Math.min(RECONNECT_MAX_DELAY_MS, 500 * 2 ** (reconnectAttemptsRef.current - 1));
       reconnectTimerRef.current = window.setTimeout(() => {
         reconnectTimerRef.current = null;
         connect(runId);

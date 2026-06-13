@@ -125,7 +125,6 @@ async def library_search(request: Request, req: LibrarySearchRequest):
 @limiter.limit("10/minute")
 async def library_ask(request: Request, req: LibraryAskRequest):
     """Corpus-wide RAG: retrieve passages, then LLM answers with `[L#]` citations."""
-    _ensure_enabled()
     question = (req.question or "").strip()[:_MAX_QUESTION_LEN]
     if not question:
         raise HTTPException(status_code=400, detail="question must be non-empty")
@@ -148,6 +147,7 @@ async def library_ask(request: Request, req: LibraryAskRequest):
             language=language,
             llm_model=llm_model,
             dataset_id=req.dataset_id or None,
+            graph_only=req.graph_only,
         )
     except DifyError as exc:
         raise HTTPException(

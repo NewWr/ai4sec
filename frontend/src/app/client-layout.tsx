@@ -11,7 +11,7 @@ function NavLink({ href, label }: { href: string; label: string }) {
   return (
     <a
       href={href}
-      className={`text-sm transition-colors ${
+      className={`inline-flex h-full shrink-0 items-center whitespace-nowrap text-sm transition-colors ${
         active
           ? "text-foreground font-medium"
           : "text-muted-foreground hover:text-foreground"
@@ -26,9 +26,9 @@ function NavBar() {
   const { t } = useTranslation();
 
   return (
-    <nav className="sticky top-0 z-40 h-14 border-b border-border bg-background/80 backdrop-blur-md">
-      <div className="flex h-full items-center gap-6 px-4 sm:px-6">
-        <a href="/" className="flex items-center gap-2.5 font-semibold tracking-tight">
+    <nav className="sticky top-0 z-40 h-14 overflow-hidden border-b border-border bg-background/80 backdrop-blur-md">
+      <div className="flex h-full min-w-0 items-center gap-4 px-4 sm:px-6">
+        <a href="/" className="flex shrink-0 items-center gap-2.5 font-semibold tracking-tight">
           <Image
             src="/scholar.png"
             alt="Scholar"
@@ -39,17 +39,22 @@ function NavBar() {
           />
           <span className="text-[15px]">{t("nav.brand")}</span>
         </a>
-        <div className="mx-1 hidden h-5 w-px bg-border sm:block" />
-        <NavLink href="/upload" label={t("nav.upload")} />
-        <NavLink href="/daily" label="每日推荐" />
-        <NavLink href="/papers" label={t("nav.papers")} />
-        <NavLink href="/knowledge" label="知识卡片" />
-        <NavLink href="/knowledge-spaces" label="知识库" />
-        <NavLink href="/translate" label={t("nav.translate")} />
-        <NavLink href="/health" label="维护" />
-        <NavLink href="/settings" label="设置" />
-        <div className="flex-1" />
-        <LanguageToggle />
+        <div className="hidden h-5 w-px shrink-0 bg-border sm:block" />
+        <div className="flex h-full min-w-0 flex-1 items-center gap-4 overflow-x-auto overflow-y-hidden [scrollbar-width:none] sm:gap-5 [&::-webkit-scrollbar]:hidden">
+          <NavLink href="/upload" label={t("nav.upload")} />
+          <NavLink href="/daily" label="每日推荐" />
+          <NavLink href="/papers" label={t("nav.papers")} />
+          <NavLink href="/knowledge" label="知识卡片" />
+          <NavLink href="/synthesis" label="综合" />
+          <NavLink href="/writing" label="写作" />
+          <NavLink href="/knowledge-spaces" label="知识库" />
+          <NavLink href="/translate" label={t("nav.translate")} />
+          <NavLink href="/health" label="维护" />
+          <NavLink href="/settings" label="设置" />
+        </div>
+        <div className="shrink-0">
+          <LanguageToggle />
+        </div>
       </div>
     </nav>
   );

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
 from app.db import database as db
+from app.services import evidence_store
+
+logger = logging.getLogger("scholar.knowledge_assets")
 
 _LIKE_ESCAPE_RE = re.compile(r"([%_\\])")
 _CITE_KEY_RE = re.compile(r"[^A-Za-z0-9]+")
@@ -32,7 +37,8 @@ def _new_id(prefix: str) -> str:
 
 
 def _like(query: str) -> str:
-    return f"%{_LIKE_ESCAPE_RE.sub(r'\\\1', query.strip())}%"
+    escaped = _LIKE_ESCAPE_RE.sub(r"\\\1", query.strip())
+    return f"%{escaped}%"
 
 
 def _citation_key(row: dict[str, Any]) -> str:
@@ -111,6 +117,74 @@ def _json_list_text(value: Any) -> str:
     return json.dumps(_json_list(value), ensure_ascii=False)
 
 
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _json_dict_text(value: Any) -> str:
+    return json.dumps(_json_dict(value), ensure_ascii=False)
+
+
+def _append_revision(raw: Any, entry: dict[str, Any], *, limit: int = 50) -> str:
+    try:
+        history = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        if not isinstance(history, list):
+            history = []
+    except Exception:
+        history = []
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    history.append({"at": stamp, **entry})
+    return json.dumps(history[-limit:], ensure_ascii=False)
+
+
+async def record_asset_event(
+    event_type: str,
+    asset_type: str,
+    asset_id: str,
+    *,
+    paper_id: str = "",
+    source: str = "",
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event_id = _new_id("evt")
+    await db.execute(
+        """
+        INSERT INTO research_asset_events (
+            event_id, event_type, asset_type, asset_id, paper_id, source, detail_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            str(event_type or "").strip(),
+            str(asset_type or "").strip(),
+            str(asset_id or "").strip(),
+            str(paper_id or "").strip(),
+            str(source or "").strip(),
+            json.dumps(detail or {}, ensure_ascii=False),
+        ),
+    )
+    return {
+        "event_id": event_id,
+        "event_type": event_type,
+        "asset_type": asset_type,
+        "asset_id": asset_id,
+        "paper_id": paper_id,
+        "source": source,
+        "detail": detail or {},
+    }
+
+
 def normalize_card_key(card_type: str, paper_id: str, title: str = "", content: str = "", source_quote: str = "") -> str:
     seed = source_quote or content or title
     norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", seed.lower())).strip()
@@ -118,12 +192,14 @@ def normalize_card_key(card_type: str, paper_id: str, title: str = "", content: 
 
 
 def _has_traceable_source(card: dict[str, Any]) -> bool:
-    if str(card.get("asset_level") or "evidence") != "evidence":
-        return True
+    # Fact-style Claim cards must trace to source text regardless of asset_level
+    # (ADR-2): require paper_id plus a bound evidence row. A raw source_quote is
+    # only acceptable after it has been anchored into research_evidence_items and
+    # linked through research_evidence_cards.
     card_type = str(card.get("card_type") or "")
     if card_type not in FACT_CARD_TYPES:
         return True
-    return bool(str(card.get("paper_id") or "").strip() and (str(card.get("source_quote") or "").strip() or _json_list(card.get("evidence_ids"))))
+    return bool(str(card.get("paper_id") or "").strip() and _json_list(card.get("evidence_ids")))
 
 
 def _validate_card_status(card: dict[str, Any], *, allow_untraceable: bool = False) -> None:
@@ -142,6 +218,64 @@ async def ensure_paper(paper_id: str) -> dict[str, Any]:
     if not row:
         raise ValueError("Paper not found")
     return row
+
+
+async def _validate_evidence_ids(evidence_ids: list[str], paper_id: str) -> None:
+    for evidence_id in evidence_ids:
+        row = await db.fetch_one(
+            "SELECT evidence_id, paper_id FROM research_evidence_items WHERE evidence_id = ?",
+            (evidence_id,),
+        )
+        if not row:
+            raise ValueError(f"Evidence not found: {evidence_id}")
+        if paper_id and str(row.get("paper_id") or "") != paper_id:
+            raise ValueError("Card evidence must belong to the same paper")
+
+
+async def _prepare_card_evidence(
+    card: dict[str, Any],
+    *,
+    force_reanchor: bool = False,
+) -> tuple[list[str], int]:
+    """Resolve a fact card's source quote into evidence ids before validation.
+
+    This keeps the Evidence -> Claim invariant in the service layer, so manual
+    cards and AI cards use the same bridge-writing path.
+    """
+    source_page = max(0, int(card.get("source_page") or 0))
+    paper_id = str(card.get("paper_id") or "").strip()
+    card_type = str(card.get("card_type") or "").strip()
+    explicit_ids = [] if force_reanchor else _json_list(card.get("evidence_ids"))
+    if explicit_ids:
+        if str(card.get("asset_level") or "") == "synthesis":
+            for evidence_id in explicit_ids:
+                if not await db.fetch_one("SELECT evidence_id FROM research_evidence_items WHERE evidence_id = ?", (evidence_id,)):
+                    raise ValueError(f"Evidence not found: {evidence_id}")
+        else:
+            await _validate_evidence_ids(explicit_ids, paper_id)
+        return explicit_ids, source_page
+    if card_type not in FACT_CARD_TYPES:
+        return _json_list(card.get("evidence_ids")), source_page
+    quote = str(card.get("source_quote") or "").strip()
+    if not paper_id or not quote:
+        return [], source_page
+    anchored = await evidence_store.anchor_quote(paper_id, quote)
+    if not anchored.ok:
+        return [], source_page
+    source_page = anchored.page or source_page
+    evidence_id = await evidence_store.upsert_evidence(
+        paper_id,
+        quote,
+        evidence_type=card_type,
+        page=source_page,
+        block_id=anchored.block_id,
+        source_run_id=str(card.get("run_id") or ""),
+        confidence=max(0.0, min(1.0, float(card.get("confidence") or 0.0))),
+        extractor=str(card.get("extractor_version") or "manual_card_v1"),
+        prompt_version=str(card.get("prompt_version") or ""),
+        anchor=False,
+    )
+    return [evidence_id], source_page
 
 
 async def update_paper_lifecycle(paper_id: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -450,9 +584,16 @@ async def list_cards(
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = await db.fetch_all(
         f"""
-        SELECT kc.*, COALESCE(p.title, '') AS paper_title, COALESCE(p.citation_key, '') AS citation_key
+        SELECT kc.*, COALESCE(p.title, '') AS paper_title, COALESCE(p.citation_key, '') AS citation_key,
+               COALESCE(evt.event_count, 0) AS event_count
           FROM knowledge_cards kc
           LEFT JOIN papers p ON p.paper_id = kc.paper_id
+          LEFT JOIN (
+              SELECT asset_id, COUNT(*) AS event_count
+                FROM research_asset_events
+               WHERE asset_type = 'card'
+               GROUP BY asset_id
+          ) evt ON evt.asset_id = kc.card_id
           {where_sql}
          ORDER BY
             CASE kc.status
@@ -474,6 +615,7 @@ async def list_cards(
                 WHEN 'low' THEN 2
                 ELSE 3
             END,
+            COALESCE(evt.event_count, 0) DESC,
             kc.updated_at DESC
          LIMIT ? OFFSET ?
         """,
@@ -495,6 +637,16 @@ async def _card_with_evidence(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+async def _after_action_card_verified(card_id: str) -> None:
+    from app.services import knowledge_synthesis, research_discovery
+
+    await knowledge_synthesis.rebuild_synthesis_cards(limit=500)
+    try:
+        await research_discovery.rebuild_discovery_for_card(card_id)
+    except Exception as exc:
+        logger.warning("Incremental research discovery failed for card=%s: %s", card_id, exc)
+
+
 async def create_card(data: dict[str, Any]) -> dict[str, Any]:
     paper_id = str(data.get("paper_id") or "")
     if paper_id:
@@ -508,17 +660,27 @@ async def create_card(data: dict[str, Any]) -> dict[str, Any]:
     title = str(data.get("title") or "").strip()
     content = str(data.get("content") or "").strip()
     source_quote = str(data.get("source_quote") or "").strip()
+    confidence = max(0.0, min(1.0, float(data.get("confidence") or 0.0)))
+    source_page = max(0, int(data.get("source_page") or 0))
     normalized_key = str(data.get("normalized_key") or "").strip() or normalize_card_key(card_type, paper_id, title, content, source_quote)
     preview = {
         "card_type": card_type,
         "title": title,
         "content": content,
         "paper_id": paper_id,
+        "source_page": source_page,
         "source_quote": source_quote,
         "evidence_ids": data.get("evidence_ids") or [],
         "status": status,
         "asset_level": asset_level,
+        "run_id": str(data.get("run_id") or "").strip(),
+        "confidence": confidence,
+        "extractor_version": str(data.get("extractor_version") or "").strip(),
+        "prompt_version": str(data.get("prompt_version") or "").strip(),
     }
+    evidence_ids, source_page = await _prepare_card_evidence(preview)
+    preview["evidence_ids"] = evidence_ids
+    preview["source_page"] = source_page
     _validate_card_status(preview, allow_untraceable=bool(data.get("allow_untraceable")))
     await db.execute(
         """
@@ -537,9 +699,9 @@ async def create_card(data: dict[str, Any]) -> dict[str, Any]:
             title,
             content,
             paper_id,
-            max(0, int(data.get("source_page") or 0)),
+            source_page,
             source_quote,
-            max(0.0, min(1.0, float(data.get("confidence") or 0.0))),
+            confidence,
             status,
             str(data.get("tags") or "").strip(),
             created_by,
@@ -564,7 +726,17 @@ async def create_card(data: dict[str, Any]) -> dict[str, Any]:
             str(data.get("evidence_strength") or "").strip(),
         ),
     )
-    await _replace_card_evidence(card_id, list(data.get("evidence_ids") or []))
+    await _replace_card_evidence(card_id, evidence_ids)
+    await record_asset_event(
+        "card_created",
+        "card",
+        card_id,
+        paper_id=paper_id,
+        source=str(data.get("created_by") or created_by),
+        detail={"status": status, "asset_level": asset_level, "card_type": card_type},
+    )
+    if status == "verified" and asset_level == "action":
+        await _after_action_card_verified(card_id)
     return await get_card(card_id)
 
 
@@ -649,7 +821,43 @@ async def update_card(card_id: str, data: dict[str, Any]) -> dict[str, Any]:
         next_card[key] = data[key]
     if "quality_flags" in next_card:
         next_card["quality_flags"] = _json_list(next_card.get("quality_flags"))
+    if data.get("source_page") is not None:
+        next_card["source_page"] = max(0, int(data.get("source_page") or 0))
+    existing_evidence_ids = _json_list(current.get("evidence_ids"))
+    next_card["evidence_ids"] = existing_evidence_ids
+    should_reanchor = any(key in data for key in ("paper_id", "source_quote", "source_page", "card_type"))
+    if should_reanchor:
+        next_card["evidence_ids"] = []
+    if "evidence_ids" in data and data["evidence_ids"] is not None:
+        next_card["evidence_ids"] = _json_list(data.get("evidence_ids"))
+        should_reanchor = False
+    prepared_evidence_ids, prepared_source_page = await _prepare_card_evidence(
+        next_card,
+        force_reanchor=should_reanchor,
+    )
+    next_card["evidence_ids"] = prepared_evidence_ids
+    evidence_changed = prepared_evidence_ids != existing_evidence_ids
+    if prepared_source_page and prepared_source_page != int(next_card.get("source_page") or 0):
+        next_card["source_page"] = prepared_source_page
+        if "source_page" not in data:
+            fields.append("source_page = ?")
+            params.append(prepared_source_page)
     _validate_card_status(next_card, allow_untraceable=bool(data.get("allow_untraceable")))
+    new_status = data.get("status")
+    if new_status is not None and str(new_status) != str(current.get("status") or ""):
+        fields.append("revision_history = ?")
+        params.append(
+            _append_revision(
+                current.get("revision_history"),
+                {
+                    "action": "status_change",
+                    "from": str(current.get("status") or ""),
+                    "to": str(new_status),
+                    "by": str(data.get("reviewed_by") or ""),
+                },
+            )
+        )
+        fields.append("card_version = card_version + 1")
     if data.get("status") == "verified":
         fields.append("reviewed_at = datetime('now')")
         fields.append("reviewed_by = ?")
@@ -657,6 +865,22 @@ async def update_card(card_id: str, data: dict[str, Any]) -> dict[str, Any]:
     if fields:
         fields.append("updated_at = datetime('now')")
         await db.execute(f"UPDATE knowledge_cards SET {', '.join(fields)} WHERE card_id = ?", tuple(params + [card_id]))
+    if evidence_changed or should_reanchor or "evidence_ids" in data:
+        await _replace_card_evidence(card_id, prepared_evidence_ids)
+    if fields:
+        await record_asset_event(
+            "card_updated",
+            "card",
+            card_id,
+            paper_id=str(next_card.get("paper_id") or current.get("paper_id") or ""),
+            source="knowledge_assets",
+            detail={
+                "status": str(next_card.get("status") or ""),
+                "changed_fields": sorted(key for key in data if key != "allow_untraceable"),
+            },
+        )
+    if data.get("status") == "verified" and str(next_card.get("asset_level") or "") == "action":
+        await _after_action_card_verified(card_id)
     return await get_card(card_id)
 
 
@@ -687,6 +911,14 @@ async def merge_card(card_id: str, target_card_id: str) -> dict[str, Any]:
             )
         except Exception:
             pass
+    await record_asset_event(
+        "card_merged",
+        "card",
+        card_id,
+        paper_id=str((await get_card(target_card_id)).get("paper_id") or ""),
+        source="knowledge_assets",
+        detail={"target_card_id": target_card_id},
+    )
     return await get_card(card_id)
 
 
@@ -788,35 +1020,96 @@ async def list_snippets(section_hint: str = "", paper_id: str = "") -> list[dict
         if not str(row.get("citation_key") or "") and row.get("paper_id"):
             paper = await ensure_paper(str(row["paper_id"]))
             row["citation_key"] = _citation_key(paper)
+        row["source_card_ids"] = _json_list(row.get("source_card_ids")) or _json_list(row.get("source_card_id"))
+        row["evidence_ids"] = _json_list(row.get("evidence_ids"))
+        row["paragraph_plan_json"] = _json_dict(row.get("paragraph_plan_json"))
+        row["trace_mode"] = str(row.get("trace_mode") or "traceable")
+        row["usage_count"] = int(row.get("usage_count") or 0)
     return rows
 
 
-async def create_snippet(data: dict[str, Any]) -> dict[str, Any]:
-    paper_id = str(data.get("paper_id") or "")
-    source_card_id = str(data.get("source_card_id") or "")
-    source_page = max(0, int(data.get("source_page") or 0))
-    source_quote = str(data.get("source_quote") or "").strip()
-    if source_card_id:
-        card = await get_card(source_card_id)
+async def _snippet_trace_from_cards(source_card_ids: list[str], evidence_ids: list[str]) -> tuple[list[dict[str, Any]], list[str], str, int, str, str]:
+    cards: list[dict[str, Any]] = []
+    all_evidence_ids = list(evidence_ids)
+    paper_id = ""
+    source_page = 0
+    source_quote = ""
+    citation_key = ""
+    for card_id in dict.fromkeys(source_card_ids):
+        if not card_id:
+            continue
+        card = await get_card(card_id)
+        cards.append(card)
+        all_evidence_ids.extend(str(eid) for eid in card.get("evidence_ids", []) if eid)
         if not paper_id:
             paper_id = str(card.get("paper_id") or "")
         if not source_page:
             source_page = int(card.get("source_page") or 0)
         if not source_quote:
-            source_quote = str(card.get("source_quote") or "").strip()
+            source_quote = str(card.get("source_quote") or "")
+        if not citation_key:
+            citation_key = str(card.get("citation_key") or "")
+    return cards, list(dict.fromkeys(all_evidence_ids)), paper_id, source_page, source_quote, citation_key
+
+
+def _paragraph_plan_from_cards(cards: list[dict[str, Any]], section_hint: str) -> dict[str, Any]:
+    groups: dict[str, list[dict[str, str]]] = {}
+    for card in cards:
+        key = str(card.get("card_type") or "claim")
+        groups.setdefault(key, []).append(
+            {
+                "card_id": str(card.get("card_id") or ""),
+                "title": str(card.get("title") or ""),
+                "paper_id": str(card.get("paper_id") or ""),
+                "citation_key": str(card.get("citation_key") or ""),
+            }
+        )
+    ordered = [key for key in ("claim", "problem", "method", "dataset", "metric", "result", "limitation") if key in groups]
+    ordered.extend(key for key in sorted(groups) if key not in ordered)
+    return {
+        "section_hint": section_hint,
+        "topic": "Traceable related-work paragraph",
+        "order": ordered,
+        "groups": {key: groups[key] for key in ordered},
+    }
+
+
+async def create_snippet(data: dict[str, Any]) -> dict[str, Any]:
+    paper_id = str(data.get("paper_id") or "")
+    source_card_id = str(data.get("source_card_id") or "")
+    source_card_ids = _json_list(data.get("source_card_ids") or [])
+    if source_card_id and source_card_id not in source_card_ids:
+        source_card_ids.insert(0, source_card_id)
+    evidence_ids = _json_list(data.get("evidence_ids") or [])
+    source_page = max(0, int(data.get("source_page") or 0))
+    source_quote = str(data.get("source_quote") or "").strip()
+    cards, evidence_ids, card_paper_id, card_page, card_quote, card_citation = await _snippet_trace_from_cards(source_card_ids, evidence_ids)
+    if not source_card_id and source_card_ids:
+        source_card_id = source_card_ids[0]
+    if not paper_id:
+        paper_id = card_paper_id
+    if not source_page:
+        source_page = card_page
+    if not source_quote:
+        source_quote = card_quote.strip()
     if paper_id:
         await ensure_paper(paper_id)
     snippet_id = _new_id("snip")
     citation_key = str(data.get("citation_key") or "")
+    if not citation_key:
+        citation_key = card_citation
     if not citation_key and paper_id:
         citation_key = _citation_key(await ensure_paper(paper_id))
     section_hint = _require_choice("section_hint", str(data.get("section_hint") or "related_work"), SECTION_HINTS)
+    paragraph_plan = _json_dict(data.get("paragraph_plan_json")) or _paragraph_plan_from_cards(cards, section_hint)
+    trace_mode = str(data.get("trace_mode") or "traceable").strip() or "traceable"
     await db.execute(
         """
         INSERT INTO writing_snippets (
             snippet_id, content, source_card_id, paper_id, citation_key,
-            source_page, source_quote, section_hint
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            source_page, source_quote, section_hint, source_card_ids,
+            evidence_ids, paragraph_plan_json, trace_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             snippet_id,
@@ -827,7 +1120,19 @@ async def create_snippet(data: dict[str, Any]) -> dict[str, Any]:
             source_page,
             source_quote,
             section_hint,
+            _json_list_text(source_card_ids),
+            _json_list_text(evidence_ids),
+            json.dumps(paragraph_plan, ensure_ascii=False),
+            trace_mode,
         ),
+    )
+    await record_asset_event(
+        "snippet_created",
+        "snippet",
+        snippet_id,
+        paper_id=paper_id,
+        source="writing",
+        detail={"source_card_ids": source_card_ids, "evidence_ids": evidence_ids, "section_hint": section_hint},
     )
     rows = await list_snippets()
     for row in rows:
@@ -842,7 +1147,19 @@ async def update_snippet(snippet_id: str, data: dict[str, Any]) -> dict[str, Any
         raise ValueError("Writing snippet not found")
     fields: list[str] = []
     params: list[Any] = []
-    for key in ("content", "source_card_id", "paper_id", "citation_key", "source_page", "source_quote", "section_hint"):
+    for key in (
+        "content",
+        "source_card_id",
+        "paper_id",
+        "citation_key",
+        "source_page",
+        "source_quote",
+        "section_hint",
+        "source_card_ids",
+        "evidence_ids",
+        "paragraph_plan_json",
+        "trace_mode",
+    ):
         if key in data and data[key] is not None:
             value = data[key]
             if key == "paper_id" and value:
@@ -851,6 +1168,10 @@ async def update_snippet(snippet_id: str, data: dict[str, Any]) -> dict[str, Any
                 value = max(0, int(value))
             if key == "section_hint":
                 value = _require_choice(key, value, SECTION_HINTS)
+            if key in {"source_card_ids", "evidence_ids"}:
+                value = _json_list_text(value)
+            if key == "paragraph_plan_json":
+                value = _json_dict_text(value)
             fields.append(f"{key} = ?")
             params.append(value)
     if fields:
@@ -858,6 +1179,14 @@ async def update_snippet(snippet_id: str, data: dict[str, Any]) -> dict[str, Any
         await db.execute(
             f"UPDATE writing_snippets SET {', '.join(fields)} WHERE snippet_id = ?",
             tuple(params + [snippet_id]),
+        )
+        await record_asset_event(
+            "snippet_updated",
+            "snippet",
+            snippet_id,
+            paper_id=str(data.get("paper_id") or row.get("paper_id") or ""),
+            source="writing",
+            detail={"changed_fields": sorted(data.keys())},
         )
     rows = await list_snippets()
     for item in rows:
@@ -868,6 +1197,148 @@ async def update_snippet(snippet_id: str, data: dict[str, Any]) -> dict[str, Any
 
 async def delete_snippet(snippet_id: str) -> None:
     await db.execute("DELETE FROM writing_snippets WHERE snippet_id = ?", (snippet_id,))
+
+
+async def build_comparison_table(paper_ids: list[str]) -> dict[str, Any]:
+    paper_ids = [paper_id for paper_id in dict.fromkeys(str(item).strip() for item in paper_ids) if paper_id]
+    if not paper_ids:
+        raise ValueError("paper_ids must be non-empty")
+    placeholders = ",".join("?" for _ in paper_ids)
+    papers = await db.fetch_all(
+        f"SELECT paper_id, title, citation_key FROM papers WHERE paper_id IN ({placeholders})",
+        tuple(paper_ids),
+    )
+    cards = await db.fetch_all(
+        f"""
+        SELECT kc.card_id, kc.card_type, kc.paper_id, kc.title, kc.content,
+               kc.source_page, kc.source_quote, COALESCE(p.citation_key, '') AS citation_key
+          FROM knowledge_cards kc
+          LEFT JOIN papers p ON p.paper_id = kc.paper_id
+         WHERE kc.paper_id IN ({placeholders})
+           AND kc.status = 'verified'
+           AND kc.card_type IN ('dataset', 'metric', 'result', 'method', 'limitation')
+         ORDER BY kc.paper_id, kc.card_type, kc.confidence DESC, kc.updated_at DESC
+        """,
+        tuple(paper_ids),
+    )
+    relation_rows = await db.fetch_all(
+        f"""
+        SELECT relation_id, source_paper_id, target_paper_id, confidence, status, negative_checks
+          FROM research_relation_edges
+         WHERE relation_type = 'conflicting_claim'
+           AND status != 'rejected'
+           AND (source_paper_id IN ({placeholders}) OR target_paper_id IN ({placeholders}))
+         ORDER BY confidence DESC, updated_at DESC
+        """,
+        tuple(paper_ids + paper_ids),
+    )
+    conflicts_by_paper: dict[str, list[str]] = {}
+    for relation in relation_rows:
+        source = str(relation.get("source_paper_id") or "")
+        target = str(relation.get("target_paper_id") or "")
+        label = f"conflict:{relation.get('status') or 'review'} {source}->{target} ({float(relation.get('confidence') or 0):.2f})"
+        conflicts_by_paper.setdefault(source, []).append(label)
+        conflicts_by_paper.setdefault(target, []).append(label)
+    by_paper_type: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for card in cards:
+        by_paper_type.setdefault((str(card.get("paper_id") or ""), str(card.get("card_type") or "")), []).append(card)
+    rows: list[dict[str, Any]] = []
+    for paper in papers:
+        paper_id = str(paper.get("paper_id") or "")
+        row = {
+            "paper_id": paper_id,
+            "title": str(paper.get("title") or paper_id),
+            "citation_key": _citation_key(paper),
+            "method": _table_cell(by_paper_type.get((paper_id, "method"), [])),
+            "dataset": _table_cell(by_paper_type.get((paper_id, "dataset"), [])),
+            "metric": _table_cell(by_paper_type.get((paper_id, "metric"), [])),
+            "result": _table_cell(by_paper_type.get((paper_id, "result"), [])),
+            "limitation": _table_cell(by_paper_type.get((paper_id, "limitation"), [])),
+            "conflicts": "\n".join(conflicts_by_paper.get(paper_id, [])) or "缺失",
+        }
+        rows.append(row)
+    await record_asset_event(
+        "comparison_table_generated",
+        "writing",
+        "comparison_table",
+        source="writing",
+        detail={"paper_ids": paper_ids, "rows": len(rows), "conflict_relations": len(relation_rows)},
+    )
+    return {"columns": ["paper", "method", "dataset", "metric", "result", "limitation", "conflicts"], "rows": rows}
+
+
+def _table_cell(cards: list[dict[str, Any]]) -> str:
+    if not cards:
+        return "缺失"
+    parts: list[str] = []
+    for index, card in enumerate(cards[:3], start=1):
+        page = int(card.get("source_page") or 0)
+        citation = str(card.get("citation_key") or "").strip()
+        suffix_parts = []
+        if citation:
+            suffix_parts.append(f"@{citation}")
+        if page:
+            suffix_parts.append(f"p.{page}")
+        suffix = f" [{' '.join(suffix_parts)}]" if suffix_parts else ""
+        parts.append(f"{index}. {str(card.get('content') or card.get('title') or '').strip()}{suffix}"[:500])
+    if len(cards) > 3:
+        parts.append(f"+{len(cards) - 3} more evidence-backed cards")
+    return "\n".join(parts)
+
+
+async def compose_related_work_snippet(card_ids: list[str], *, section_hint: str = "related_work") -> dict[str, Any]:
+    card_ids = [card_id for card_id in dict.fromkeys(str(item).strip() for item in card_ids) if card_id]
+    if not card_ids:
+        raise ValueError("card_ids must be non-empty")
+    cards = [await get_card(card_id) for card_id in card_ids]
+    paragraph_plan = _paragraph_plan_from_cards(cards, section_hint)
+    sentences: list[str] = []
+    evidence_ids: list[str] = []
+    for index, card in enumerate(cards, start=1):
+        evidence_ids.extend(str(eid) for eid in card.get("evidence_ids", []) if eid)
+        citation = str(card.get("citation_key") or _citation_key(card))
+        page = int(card.get("source_page") or 0)
+        marker = f" @{citation}" if citation else ""
+        source = f" p.{page}" if page else ""
+        sentences.append(f"[C{index}] {str(card.get('content') or card.get('title') or '').strip()}{marker}{source}.")
+    content = " ".join(sentence for sentence in sentences if sentence.strip())
+    first = cards[0]
+    return await create_snippet(
+        {
+            "content": content,
+            "source_card_id": str(first.get("card_id") or ""),
+            "source_card_ids": card_ids,
+            "evidence_ids": list(dict.fromkeys(evidence_ids)),
+            "paragraph_plan_json": paragraph_plan,
+            "paper_id": str(first.get("paper_id") or ""),
+            "citation_key": str(first.get("citation_key") or ""),
+            "source_page": int(first.get("source_page") or 0),
+            "source_quote": str(first.get("source_quote") or ""),
+            "section_hint": section_hint,
+            "trace_mode": "traceable",
+        }
+    )
+
+
+async def export_obsidian_markdown() -> str:
+    cards = await list_cards(status="verified", limit=500)
+    lines = ["# AI4Sec Knowledge Export", ""]
+    for card in cards:
+        title = str(card.get("title") or card.get("card_id") or "Card")
+        lines.extend(
+            [
+                f"## {title}",
+                "",
+                str(card.get("content") or ""),
+                "",
+                f"- paper_id: {card.get('paper_id') or ''}",
+                f"- page: {card.get('source_page') or 0}",
+                f"- quote: {card.get('source_quote') or ''}",
+                f"- tags: {card.get('tags') or ''}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip() + "\n"
 
 
 async def import_references(content: str, fmt: str = "bibtex") -> dict[str, Any]:
@@ -1229,7 +1700,8 @@ async def local_search(mode: str, query: str, limit: int = 20) -> dict[str, Any]
     return {"mode": mode, "query": query, "results": results}
 
 
-async def export_snippets_markdown(section_hint: str = "") -> str:
+async def export_snippets_markdown(section_hint: str = "", *, mode: str = "traceable") -> str:
+    mode = "clean" if mode == "clean" else "traceable"
     snippets = await list_snippets(section_hint=section_hint)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for snippet in snippets:
@@ -1244,11 +1716,17 @@ async def export_snippets_markdown(section_hint: str = "") -> str:
                 citation = str(row.get("paper_id") or "").strip()
             suffix = f" [@{citation}]" if citation else ""
             lines.append(f"- {str(row.get('content') or '').strip()}{suffix}")
+            if mode == "clean":
+                continue
             source_parts = []
             if row.get("paper_id"):
                 source_parts.append(f"paper_id={row['paper_id']}")
-            if row.get("source_card_id"):
-                source_parts.append(f"card_id={row['source_card_id']}")
+            source_card_ids = _json_list(row.get("source_card_ids")) or _json_list(row.get("source_card_id"))
+            if source_card_ids:
+                source_parts.append(f"card_ids={','.join(source_card_ids)}")
+            evidence_ids = _json_list(row.get("evidence_ids"))
+            if evidence_ids:
+                source_parts.append(f"evidence_ids={','.join(evidence_ids)}")
             if int(row.get("source_page") or 0) > 0:
                 source_parts.append(f"page={int(row.get('source_page') or 0)}")
             if source_parts:
@@ -1256,7 +1734,18 @@ async def export_snippets_markdown(section_hint: str = "") -> str:
             quote = _short_quote(str(row.get("source_quote") or ""))
             if quote:
                 lines.append(f"  - quote: {quote}")
+            plan = _json_dict(row.get("paragraph_plan_json"))
+            if plan.get("order"):
+                lines.append(f"  - paragraph_plan: {', '.join(str(item) for item in plan.get('order', []))}")
         lines.append("")
+    if lines:
+        await record_asset_event(
+            "writing_exported",
+            "writing",
+            section_hint or "all",
+            source="markdown",
+            detail={"mode": mode, "section_hint": section_hint, "snippet_count": len(snippets)},
+        )
     return "\n".join(lines).strip() + ("\n" if lines else "")
 
 
@@ -1300,6 +1789,30 @@ async def export_ris(collection_id: str = "") -> str:
         lines.append("ER  - ")
         lines.append("")
     return "\n".join(lines)
+
+
+async def export_zotero_csl_json(collection_id: str = "") -> str:
+    papers = await _papers_for_export(collection_id)
+    entries: list[dict[str, Any]] = []
+    for row in papers:
+        entry: dict[str, Any] = {
+            "id": _citation_key(row),
+            "type": "article-journal" if row.get("venue") else "article",
+            "title": _csl_text(str(row.get("title") or row.get("original_filename") or row.get("paper_id") or "")),
+        }
+        if row.get("venue"):
+            entry["container-title"] = _csl_text(str(row.get("venue") or ""))
+        if row.get("year"):
+            entry["issued"] = {"date-parts": [[int(row.get("year") or 0)]]}
+        doi = str(row.get("doi") or "").strip()
+        if doi:
+            entry["DOI"] = doi.replace("doi:", "").strip()
+        entries.append(entry)
+    return json.dumps(entries, ensure_ascii=False, indent=2) + ("\n" if entries else "")
+
+
+def _csl_text(value: str) -> str:
+    return _clean_ref_value(value).replace("{", "").replace("}", "")
 
 
 async def _papers_for_export(collection_id: str = "") -> list[dict[str, Any]]:
@@ -1424,6 +1937,97 @@ async def health_report() -> dict[str, Any]:
     pending_ai_cards_rows = await db.fetch_all(
         "SELECT card_id FROM knowledge_cards WHERE created_by = 'ai' AND status = 'draft'"
     )
+    verified_without_evidence_rows = await db.fetch_all(
+        """
+        SELECT kc.card_id
+          FROM knowledge_cards kc
+          LEFT JOIN research_evidence_cards rec ON rec.card_id = kc.card_id
+         WHERE kc.status = 'verified'
+           AND kc.card_type IN ('claim', 'method', 'dataset', 'metric', 'result', 'limitation')
+         GROUP BY kc.card_id
+        HAVING COUNT(rec.evidence_id) = 0
+        """
+    )
+    draft_backlog_rows = await db.fetch_all(
+        """
+        SELECT card_id, julianday('now') - julianday(created_at) AS age_days
+          FROM knowledge_cards
+         WHERE status = 'draft'
+        """
+    )
+    draft_backlog_avg_age = (
+        sum(float(row.get("age_days") or 0.0) for row in draft_backlog_rows) / len(draft_backlog_rows)
+        if draft_backlog_rows
+        else 0.0
+    )
+    ai_card_counts = await db.fetch_one(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN quality_flags LIKE '%low%' OR quality_flags LIKE '%missing%' THEN 1 ELSE 0 END) AS low_quality
+          FROM knowledge_cards
+         WHERE created_by = 'ai'
+        """
+    ) or {}
+    ai_total = int(ai_card_counts.get("total") or 0)
+    low_quality_ratio = round(float(ai_card_counts.get("low_quality") or 0) / ai_total, 3) if ai_total else 0.0
+    weak_synthesis_rows = await db.fetch_all(
+        """
+        SELECT card_id
+          FROM knowledge_cards
+         WHERE asset_level = 'synthesis'
+           AND status = 'verified'
+           AND (
+                supporting_paper_ids = '[]'
+             OR json_array_length(supporting_paper_ids) < 2
+           )
+        """
+    )
+    gaps_missing_rows = await db.fetch_all(
+        """
+        SELECT gap_id
+          FROM research_gaps
+         WHERE status != 'rejected'
+           AND (support_evidence_ids = '[]' OR minimum_experiment = '')
+        """
+    )
+    snippets_missing_trace_rows = await db.fetch_all(
+        """
+        SELECT snippet_id
+          FROM writing_snippets
+         WHERE source_card_id = ''
+           AND (source_card_ids = '[]' OR source_card_ids = '')
+           AND (evidence_ids = '[]' OR evidence_ids = '')
+        """
+    )
+    qa_stats = await db.fetch_one(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN graph_sources > 0 THEN 1 ELSE 0 END) AS graph_hit
+          FROM library_qa_events
+        """
+    ) or {}
+    qa_total = int(qa_stats.get("total") or 0)
+    local_qa_graph_hit_ratio = round(float(qa_stats.get("graph_hit") or 0) / qa_total, 3) if qa_total else 0.0
+    export_stats = await db.fetch_one(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN citation_key = '' AND paper_id = '' THEN 1 ELSE 0 END) AS missing
+          FROM writing_snippets
+        """
+    ) or {}
+    export_total = int(export_stats.get("total") or 0)
+    export_citation_missing_rate = round(float(export_stats.get("missing") or 0) / export_total, 3) if export_total else 0.0
+    isolated_evidence_rows = await db.fetch_all(
+        """
+        SELECT rei.evidence_id
+          FROM research_evidence_items rei
+          LEFT JOIN research_evidence_cards rec ON rec.evidence_id = rei.evidence_id
+         WHERE rec.evidence_id IS NULL
+        """
+    )
 
     issues = [
         _issue("unparsed", "high", "未解析论文", unparsed_rows),
@@ -1434,6 +2038,11 @@ async def health_report() -> dict[str, Any]:
         _issue("reading_without_cards", "medium", "精读但无知识卡片", reading_without_cards_rows),
         _issue("pending_ai_cards", "low", "待审核 AI 草稿卡片", pending_ai_cards_rows, key="card_id"),
         _issue("stale_index", "medium", "待同步或待重建索引", stale_index_rows),
+        _issue("verified_without_evidence", "high", "Verified 卡片缺少证据", verified_without_evidence_rows, key="card_id"),
+        _issue("weak_synthesis", "high", "Synthesis 支撑论文不足", weak_synthesis_rows, key="card_id"),
+        _issue("gaps_missing_support_or_experiment", "high", "Gap 缺少证据或最小实验", gaps_missing_rows, key="gap_id"),
+        _issue("writing_missing_trace", "high", "写作片段缺少来源 trace", snippets_missing_trace_rows, key="snippet_id"),
+        _issue("isolated_evidence", "medium", "孤立 evidence", isolated_evidence_rows, key="evidence_id"),
     ]
     return {
         "total_papers": total_papers,
@@ -1446,6 +2055,16 @@ async def health_report() -> dict[str, Any]:
         "read_without_notes": len(read_without_notes_rows),
         "reading_without_cards": len(reading_without_cards_rows),
         "pending_ai_cards": len(pending_ai_cards_rows),
+        "verified_cards_without_evidence": len(verified_without_evidence_rows),
+        "draft_backlog_count": len(draft_backlog_rows),
+        "draft_backlog_avg_age_days": round(draft_backlog_avg_age, 2),
+        "low_quality_ai_candidate_ratio": low_quality_ratio,
+        "weak_synthesis_cards": len(weak_synthesis_rows),
+        "gaps_missing_support_or_experiment": len(gaps_missing_rows),
+        "writing_snippets_missing_trace": len(snippets_missing_trace_rows),
+        "local_qa_graph_hit_ratio": local_qa_graph_hit_ratio,
+        "export_citation_missing_rate": export_citation_missing_rate,
+        "isolated_evidence_count": len(isolated_evidence_rows),
         "issues": issues,
     }
 
@@ -1464,6 +2083,7 @@ async def fix_health_issue(issue_type: str, paper_ids: list[str] | None = None) 
         else:
             await db.execute("UPDATE dify_syncs SET status = 'pending', error_msg = '', updated_at = datetime('now') WHERE status = 'failed'")
             fixed = 1
+        await record_asset_event("health_fix", "health", issue_type, source="health", detail={"paper_ids": paper_ids, "fixed": fixed})
         return {"issue_type": issue_type, "fixed": fixed, "message": "同步失败项已标记为待重试"}
     if issue_type == "missing_metadata":
         targets = paper_ids or [row["paper_id"] for row in await db.fetch_all("SELECT paper_id FROM papers WHERE citation_key = ''")]
@@ -1471,10 +2091,12 @@ async def fix_health_issue(issue_type: str, paper_ids: list[str] | None = None) 
             row = await ensure_paper(paper_id)
             await db.execute("UPDATE papers SET citation_key = ? WHERE paper_id = ? AND citation_key = ''", (_citation_key(row), paper_id))
             fixed += 1
+        await record_asset_event("health_fix", "health", issue_type, source="health", detail={"paper_ids": targets, "fixed": fixed})
         return {"issue_type": issue_type, "fixed": fixed, "message": "已补齐可自动生成的 citation key；DOI、年份、venue 仍需人工确认"}
     if issue_type == "duplicates":
         groups = await duplicate_candidates()
         fixed = len(groups)
+        await record_asset_event("health_fix", "health", issue_type, source="health", detail={"fixed": fixed})
         return {"issue_type": issue_type, "fixed": fixed, "message": "重复候选已刷新；不会自动合并或删除论文"}
     if issue_type == "stale_index":
         targets = paper_ids or [
@@ -1502,6 +2124,7 @@ async def fix_health_issue(issue_type: str, paper_ids: list[str] | None = None) 
                 (paper_id,),
             )
             fixed += 1
+        await record_asset_event("health_fix", "health", issue_type, source="health", detail={"paper_ids": targets, "fixed": fixed})
         return {"issue_type": issue_type, "fixed": fixed, "message": "已标记为待同步/待重建，实际完成状态请查看同步状态"}
     if issue_type == "pending_ai_cards":
         await db.execute("UPDATE knowledge_cards SET status = 'draft', updated_at = datetime('now') WHERE created_by = 'ai' AND status = 'draft'")

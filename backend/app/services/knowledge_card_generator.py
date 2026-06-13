@@ -11,6 +11,7 @@ from typing import Any
 from app.config import get_settings
 from app.db import database as db
 from app.services import knowledge_assets as assets
+from app.services import evidence_store
 from app.services.llm_service import get_llm_service
 
 logger = logging.getLogger("scholar.knowledge_cards")
@@ -43,6 +44,7 @@ Each item must follow this schema:
 Rules:
 - Return at most MAX_CARDS_PLACEHOLDER cards.
 - Prefer high-value cards useful for later literature review, method design, experiments, or writing.
+- If SECTION_CONTEXT blocks are present, extract factual cards from the matching section role first: method cards from method sections, dataset/metric/result cards from evaluation sections, and limitation/question/idea from assessment sections.
 - Factual card types (claim, method, dataset, metric, result, limitation) MUST include a source_quote copied from the context.
 - Every card MUST explain its research utility through why_useful, use_case, next_action, and risk_or_caveat.
 - next_action must be executable, e.g. "use as related-work contrast", "turn into an ablation", "check as baseline", or "add as limitation evidence".
@@ -56,6 +58,13 @@ class SourceMatch:
     ok: bool
     page: int = 0
     flags: list[str] | None = None
+
+
+@dataclass
+class CritiqueResult:
+    score: float
+    flags: list[str]
+    passed: bool
 
 
 def _new_id(prefix: str) -> str:
@@ -154,9 +163,12 @@ async def generate_cards_for_run(
         )
         candidates = _parse_candidates(raw)
         source_rows = await _source_rows(paper_id, output)
+        research_profiles = await _research_profiles_for_paper(paper_id)
+        promote_threshold = float(settings.knowledge_card_promote_confidence)
         card_ids: list[str] = []
         skipped = 0
         duplicates = 0
+        critique_low = 0
 
         for candidate in candidates[:max_cards]:
             card = _coerce_candidate(candidate, paper_id, run_id, prompt_version)
@@ -173,6 +185,11 @@ async def generate_cards_for_run(
             if match.page:
                 card["source_page"] = match.page
             card["quality_flags"] = sorted(set(flags))
+            critique = critique_card_candidate(card, match=match, research_profiles=research_profiles)
+            card["quality_flags"] = sorted(set([*card["quality_flags"], *critique.flags]))
+            card["critique_score"] = critique.score
+            if not critique.passed:
+                critique_low += 1
             if not card["normalized_key"]:
                 card["normalized_key"] = assets.normalize_card_key(
                     card["card_type"],
@@ -186,6 +203,34 @@ async def generate_cards_for_run(
                 duplicates += 1
                 skipped += 1
                 continue
+            if card["card_type"] in {"question", "idea"}:
+                await _upsert_gap_seed(card, paper_id=paper_id, run_id=run_id, prompt_version=prompt_version)
+                continue
+            # Bind fact cards to the unified evidence layer (ADR-2): anchor the
+            # source quote into research_evidence_items and pass evidence_ids so
+            # create_card writes the research_evidence_cards bridge.
+            evidence_ids: list[str] = []
+            if card["card_type"] in FACT_CARD_TYPES and card["source_quote"]:
+                try:
+                    eid = await evidence_store.upsert_evidence(
+                        paper_id,
+                        card["source_quote"],
+                        evidence_type=card["card_type"],
+                        page=card.get("source_page") or 0,
+                        source_run_id=run_id,
+                        confidence=card.get("confidence") or 0.0,
+                        extractor=EXTRACTOR_VERSION,
+                        prompt_version=prompt_version,
+                    )
+                    evidence_ids = [eid]
+                except Exception as exc:
+                    logger.warning("[%s] evidence upsert failed for card: %s", paper_id, exc)
+            card["evidence_ids"] = evidence_ids
+            # Promotion state machine (ADR-10): high-confidence, evidence-anchored
+            # cards auto-promote to verified; everything else stays draft in the
+            # review queue.
+            if critique.passed and _should_promote(card, evidence_ids, promote_threshold):
+                card["status"] = "verified"
             created = await assets.create_card(card)
             card_ids.append(str(created.get("card_id") or ""))
 
@@ -196,6 +241,8 @@ async def generate_cards_for_run(
             cards_created=len(card_ids),
             cards_skipped=skipped,
             duplicate_count=duplicates,
+            critique_low_count=critique_low,
+            total_candidates=len(candidates[:max_cards]),
         )
         result = await _get_generation(generation_id)
         result["card_ids"] = card_ids
@@ -232,6 +279,86 @@ async def generate_cards_from_state(state: dict[str, Any], *, trigger_source: st
     )
 
 
+def _should_promote(card: dict[str, Any], evidence_ids: list[str], threshold: float) -> bool:
+    """Promotion gate (ADR-10): auto-promote draft -> verified only when the card
+    is high-confidence, evidence-anchored (fact cards) and articulates its value.
+    """
+    if _safe_float(card.get("confidence")) < threshold:
+        return False
+    if not str(card.get("why_useful") or "").strip() or not str(card.get("next_action") or "").strip():
+        return False
+    if str(card.get("card_type") or "") in FACT_CARD_TYPES and not evidence_ids:
+        return False
+    return True
+
+
+def critique_card_candidate(
+    card: dict[str, Any],
+    *,
+    match: SourceMatch,
+    research_profiles: list[str] | None = None,
+) -> CritiqueResult:
+    score = _safe_float(card.get("confidence"))
+    flags: list[str] = []
+    for field in ("why_useful", "use_case", "next_action", "risk_or_caveat"):
+        if not str(card.get(field) or "").strip():
+            score -= 0.18
+            flags.append(f"critique_missing_{field}")
+    if str(card.get("card_type") or "") in FACT_CARD_TYPES and not match.ok:
+        score -= 0.35
+        flags.append("critique_unanchored_fact")
+    text = _norm_text(
+        " ".join(
+            str(card.get(field) or "")
+            for field in ("title", "content", "why_useful", "next_action", "risk_or_caveat")
+        )
+    )
+    generic_markers = [
+        "future research",
+        "important for researchers",
+        "provides insights",
+        "further investigate",
+        "后续研究",
+        "具有重要意义",
+    ]
+    if any(marker in text for marker in generic_markers):
+        score -= 0.10
+        flags.append("critique_generic_value")
+    profile_terms = _profile_terms(research_profiles or [])
+    if profile_terms:
+        profile_hits = [term for term in profile_terms if term in text]
+        if not profile_hits:
+            score -= 0.16
+            flags.append("critique_profile_unreferenced")
+        else:
+            flags.append("critique_profile_referenced")
+    score = round(max(0.0, min(1.0, score)), 3)
+    blocking_flags = {
+        "critique_profile_unreferenced",
+        "critique_unanchored_fact",
+    }
+    flag_set = set(flags)
+    passed = (
+        score >= 0.62
+        and not any(flag.startswith("critique_missing_") for flag in flag_set)
+        and not (flag_set & blocking_flags)
+    )
+    return CritiqueResult(score=score, flags=sorted(flag_set), passed=passed)
+
+
+def _profile_terms(profiles: list[str]) -> list[str]:
+    terms: list[str] = []
+    for profile in profiles:
+        tokens = re.findall(r"[\u4e00-\u9fff]{2,8}|[a-zA-Z][a-zA-Z0-9-]{2,}", profile.lower())
+        for token in tokens:
+            token = token.strip().lower()
+            if token and token not in terms:
+                terms.append(token)
+            if len(terms) >= 24:
+                return terms
+    return terms
+
+
 def validate_card_source(card: dict[str, Any], source_rows: list[dict[str, Any]]) -> SourceMatch:
     quote = str(card.get("source_quote") or "").strip()
     if not quote:
@@ -260,6 +387,10 @@ async def _build_context(paper_id: str, output: dict[str, Any] | None) -> str:
     paper = await db.fetch_one("SELECT title FROM papers WHERE paper_id = ?", (paper_id,))
     if paper and paper.get("title"):
         parts.append(f"Paper title: {paper['title']}")
+    profiles = await _research_profiles_for_paper(paper_id)
+    if profiles:
+        parts.append("Research profile:")
+        parts.extend(f"- {profile}" for profile in profiles)
     final_json = {}
     markdown = ""
     if output:
@@ -281,9 +412,21 @@ async def _build_context(paper_id: str, output: dict[str, Any] | None) -> str:
             paraphrase = str(item.get("paraphrase") or "").strip()
             if quote:
                 parts.append(f"- [{eid or slot or 'evidence'}] [p.{page}] {quote} | {paraphrase}")
+    section_contexts = final_json.get("lens_section_contexts") if isinstance(final_json, dict) else []
+    if isinstance(section_contexts, list) and section_contexts:
+        parts.append("SECTION_CONTEXT blocks:")
+        for item in section_contexts[:8]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("section_key") or "").strip()
+            target = ", ".join(str(value) for value in item.get("target_card_types") or [] if str(value).strip())
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            parts.append(f"## SECTION_CONTEXT {key} target_card_types={target}\n{_cap_context_text(text, 3500)}")
     if markdown.strip():
         parts.append("Analysis markdown:")
-        parts.append(markdown[:8000])
+        parts.append(_cap_context_text(markdown, 5000 if section_contexts else 8000))
     block_rows = await db.fetch_all(
         """
         SELECT block_id, page_idx, text, section_path
@@ -302,6 +445,11 @@ async def _build_context(paper_id: str, output: dict[str, Any] | None) -> str:
                 continue
             parts.append(f"[block:{row.get('block_id')}] [p.{int(row.get('page_idx') or 0) + 1}] {text[:900]}")
     return "\n\n".join(parts)
+
+
+def _cap_context_text(text: str, limit: int) -> str:
+    text = str(text or "").strip()
+    return text if len(text) <= limit else text[:limit]
 
 
 async def _source_rows(paper_id: str, output: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -349,10 +497,23 @@ def _coerce_candidate(candidate: dict[str, Any], paper_id: str, run_id: str, pro
     source_quote = str(candidate.get("source_quote") or "").strip()
     if not title or not content:
         return None
-    use_case = str(candidate.get("use_case") or "").strip() or _default_use_case(card_type)
-    why_useful = str(candidate.get("why_useful") or "").strip() or _default_why_useful(card_type)
-    next_action = str(candidate.get("next_action") or "").strip() or _default_next_action(card_type)
-    risk_or_caveat = str(candidate.get("risk_or_caveat") or "").strip() or "Verify applicability before reusing this paper-specific evidence."
+    use_case = str(candidate.get("use_case") or "").strip()
+    why_useful = str(candidate.get("why_useful") or "").strip()
+    next_action = str(candidate.get("next_action") or "").strip()
+    risk_or_caveat = str(candidate.get("risk_or_caveat") or "").strip()
+    quality_flags = ["low_confidence"] if _safe_float(candidate.get("confidence")) < 0.5 else []
+    missing_value_fields = [
+        field
+        for field, value in (
+            ("why_useful", why_useful),
+            ("use_case", use_case),
+            ("next_action", next_action),
+            ("risk_or_caveat", risk_or_caveat),
+        )
+        if not value
+    ]
+    if missing_value_fields:
+        quality_flags.append("missing_value_fields")
     return {
         "card_type": card_type,
         "title": title,
@@ -368,7 +529,7 @@ def _coerce_candidate(candidate: dict[str, Any], paper_id: str, run_id: str, pro
         "source_kind": "evidence_pool" if str(candidate.get("source_ref") or "").startswith("evidence:") else "ai_report",
         "source_ref": str(candidate.get("source_ref") or "").strip()[:160],
         "normalized_key": "",
-        "quality_flags": ["low_confidence"] if _safe_float(candidate.get("confidence")) < 0.5 else [],
+        "quality_flags": quality_flags,
         "prompt_version": prompt_version,
         "extractor_version": EXTRACTOR_VERSION,
         "asset_level": "action",
@@ -376,60 +537,13 @@ def _coerce_candidate(candidate: dict[str, Any], paper_id: str, run_id: str, pro
         "why_useful": why_useful[:1000],
         "use_case": use_case[:120],
         "next_action": next_action[:1000],
-        "expected_output": _default_expected_output(use_case)[:500],
+        "expected_output": str(candidate.get("expected_output") or "").strip()[:500],
         "risk_or_caveat": risk_or_caveat[:1000],
         "priority": _default_priority(card_type, _safe_float(candidate.get("confidence"))),
         "supporting_card_ids": [],
         "supporting_paper_ids": [paper_id] if paper_id else [],
         "evidence_strength": "single-paper",
     }
-
-
-def _default_use_case(card_type: str) -> str:
-    return {
-        "method": "implementation",
-        "dataset": "experiment",
-        "metric": "experiment",
-        "result": "writing",
-        "limitation": "idea",
-        "question": "idea",
-        "idea": "idea",
-    }.get(card_type, "writing")
-
-
-def _default_why_useful(card_type: str) -> str:
-    return {
-        "method": "Captures a reusable method mechanism that can inform implementation, comparison, or method design.",
-        "dataset": "Identifies an evaluation setting that can be reused when designing experiments or baselines.",
-        "metric": "Identifies an evaluation criterion that can standardize later experiment comparison.",
-        "result": "Provides cited result evidence that can support related work, motivation, or comparison writing.",
-        "limitation": "Records an applicability boundary that can motivate follow-up work or risk analysis.",
-        "question": "Marks an unresolved issue that can seed future reading or idea generation.",
-        "idea": "Preserves a possible research direction for later refinement.",
-    }.get(card_type, "Provides traceable evidence that may support later research writing or decisions.")
-
-
-def _default_next_action(card_type: str) -> str:
-    return {
-        "method": "Compare this mechanism with your target method and decide whether it should be a baseline, module, or ablation.",
-        "dataset": "Check whether this dataset or setting should be included in the next experiment matrix.",
-        "metric": "Use this metric when drafting the evaluation protocol or comparing baselines.",
-        "result": "Use this as cited evidence in related work or as a comparison point in the experiment section.",
-        "limitation": "Turn this limitation into a motivation, stress test, or follow-up hypothesis.",
-        "question": "Queue this question for targeted literature search or experiment design.",
-        "idea": "Convert this idea into a concrete hypothesis and minimum experiment.",
-    }.get(card_type, "Review the source and decide whether to promote this evidence into writing, experiment, or idea planning.")
-
-
-def _default_expected_output(use_case: str) -> str:
-    return {
-        "writing": "A cited sentence or paragraph for related work, motivation, result comparison, or limitation discussion.",
-        "experiment": "A dataset, metric, baseline, or ablation item in the experiment plan.",
-        "idea": "A refined research hypothesis, gap statement, or follow-up experiment.",
-        "review": "A review note with traceable evidence and applicability judgment.",
-        "implementation": "An implementation checklist item, baseline module, or ablation variant.",
-        "reading": "A prioritized reading note or follow-up question.",
-    }.get(use_case, "A concrete research note that can be reused in later work.")
 
 
 def _default_priority(card_type: str, confidence: float) -> str:
@@ -467,6 +581,93 @@ async def _is_duplicate(card: dict[str, Any]) -> bool:
         )
         return bool(row)
     return False
+
+
+async def _research_profiles_for_paper(paper_id: str) -> list[str]:
+    rows = await db.fetch_all(
+        """
+        SELECT DISTINCT ks.research_profile
+          FROM knowledge_spaces ks
+          JOIN knowledge_space_items ksi ON ksi.space_id = ks.space_id
+         WHERE ksi.paper_id = ?
+           AND ks.research_profile != ''
+         ORDER BY ks.sort_order ASC, ks.name ASC
+         LIMIT 5
+        """,
+        (paper_id,),
+    )
+    return [str(row.get("research_profile") or "").strip()[:1200] for row in rows if str(row.get("research_profile") or "").strip()]
+
+
+def _gap_seed_id(paper_id: str, title: str, content: str) -> str:
+    seed = _norm_text(f"{paper_id}|{title}|{content}")[:240]
+    return "gap_seed_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
+
+
+async def _upsert_gap_seed(
+    card: dict[str, Any],
+    *,
+    paper_id: str,
+    run_id: str,
+    prompt_version: str,
+) -> None:
+    support_evidence_ids: list[str] = []
+    source_quote = str(card.get("source_quote") or "").strip()
+    if source_quote:
+        match = await evidence_store.anchor_quote(paper_id, source_quote)
+        if match.ok:
+            support_evidence_ids = [
+                await evidence_store.upsert_evidence(
+                    paper_id,
+                    source_quote,
+                    evidence_type=str(card.get("card_type") or "idea"),
+                    page=int(card.get("source_page") or 0) or match.page,
+                    block_id=match.block_id,
+                    source_run_id=run_id,
+                    confidence=float(card.get("confidence") or 0.0),
+                    extractor=EXTRACTOR_VERSION,
+                    prompt_version=prompt_version,
+                    anchor=False,
+                )
+            ]
+    gap_id = _gap_seed_id(paper_id, str(card.get("title") or ""), str(card.get("content") or ""))
+    await db.execute(
+        """
+        INSERT INTO research_gaps (
+            gap_id, title, hypothesis, description, support_evidence_ids,
+            counter_evidence_ids, coverage_status, novelty_score, feasibility_score,
+            evidence_strength, risk_score, experiment_cost, domain_value, status,
+            rejection_reason, minimum_experiment, gap_version
+        ) VALUES (?, ?, ?, ?, ?, '[]', 'unknown', ?, ?, ?, ?, ?, ?, 'candidate', '', ?, 1)
+        ON CONFLICT(gap_id) DO UPDATE SET
+            hypothesis = excluded.hypothesis,
+            description = excluded.description,
+            support_evidence_ids = excluded.support_evidence_ids,
+            novelty_score = excluded.novelty_score,
+            feasibility_score = excluded.feasibility_score,
+            evidence_strength = excluded.evidence_strength,
+            risk_score = excluded.risk_score,
+            experiment_cost = excluded.experiment_cost,
+            domain_value = excluded.domain_value,
+            minimum_experiment = excluded.minimum_experiment,
+            updated_at = datetime('now')
+        WHERE research_gaps.status NOT IN ('rejected', 'promoted_to_idea')
+        """,
+        (
+            gap_id,
+            str(card.get("title") or "")[:240],
+            str(card.get("content") or "")[:2000],
+            str(card.get("why_useful") or card.get("content") or "")[:4000],
+            json.dumps(support_evidence_ids, ensure_ascii=False),
+            max(0.35, float(card.get("confidence") or 0.0) * 0.7),
+            0.45,
+            min(1.0, 0.35 + len(support_evidence_ids) * 0.25),
+            0.45,
+            0.4,
+            0.5,
+            str(card.get("next_action") or "")[:1000],
+        ),
+    )
 
 
 async def _existing_generation(run_id: str, paper_id: str, source_hash: str, prompt_version: str) -> dict[str, Any] | None:
@@ -514,8 +715,18 @@ async def _finish_generation(
     cards_created: int = 0,
     cards_skipped: int = 0,
     duplicate_count: int = 0,
+    critique_low_count: int = 0,
+    total_candidates: int = 0,
     error_msg: str = "",
 ) -> None:
+    summary = {
+        "total_candidates": total_candidates,
+        "created": cards_created,
+        "skipped": cards_skipped,
+        "duplicates": duplicate_count,
+        "critique_low_count": critique_low_count,
+        "critique_rejection_rate": round(critique_low_count / total_candidates, 3) if total_candidates else 0.0,
+    }
     await db.execute(
         """
         UPDATE knowledge_card_generations
@@ -524,11 +735,21 @@ async def _finish_generation(
                cards_created = ?,
                cards_skipped = ?,
                duplicate_count = ?,
+               critique_summary_json = ?,
                error_msg = ?,
                updated_at = datetime('now')
          WHERE generation_id = ?
         """,
-        (status, raw_output_json, cards_created, cards_skipped, duplicate_count, error_msg, generation_id),
+        (
+            status,
+            raw_output_json,
+            cards_created,
+            cards_skipped,
+            duplicate_count,
+            json.dumps(summary, ensure_ascii=False),
+            error_msg,
+            generation_id,
+        ),
     )
 
 

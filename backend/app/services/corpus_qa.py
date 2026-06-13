@@ -1,21 +1,25 @@
-"""Corpus-wide RAG Q&A over the Dify knowledge base.
+"""Corpus-wide RAG Q&A over local graph assets and optional Dify retrieval.
 
 Unlike single-paper Q&A (``workflows/qa_subgraph.py``), this retrieves passages
-across the whole library via the Dify proxy and asks the LLM to synthesise an
-answer. Because library documents are markdown (no page index), citations use a
-document-level ``[L#]`` scheme instead of ``[p.X]`` — each marker maps to one
-retrieved passage (``document_id`` + ``segment_id``) that the frontend links to
-the library document view.
+across the whole library and asks the LLM to synthesise an answer. Local graph
+records are the primary durable source; Dify is an optional external retrieval
+enhancement. Citations use a document-level ``[L#]`` scheme — each marker maps
+to one retrieved passage (``document_id`` + ``segment_id``).
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Any
 
+import json
+
+from app.db import database as db
 from app.config import get_settings
 from app.services import dify_client
+from app.services.local_graph_retrieval import search_local_graph_records
 from app.services.llm_service import get_llm_service
 
 logger = logging.getLogger("scholar.corpus_qa")
@@ -77,6 +81,10 @@ def _format_context(records: list[dict[str, Any]]) -> tuple[str, list[dict[str, 
             "document_name": name,
             "segment_id": record.get("segment_id") or "",
             "score": record.get("score"),
+            "source_type": record.get("source_type") or "dify",
+            "card_id": record.get("card_id") or "",
+            "paper_id": record.get("paper_id") or "",
+            "page": record.get("page") or 0,
         })
     return "\n\n".join(parts), sources
 
@@ -95,6 +103,34 @@ def _no_results_markdown(language: str) -> str:
     )
 
 
+async def _record_qa_event(question: str, markdown: str, sources: list[dict[str, Any]], search_method: str) -> None:
+    source_types = sorted({str(source.get("source_type") or "dify") for source in sources})
+    graph_types = {"knowledge_graph", "evidence", "gap", "relation", "snippet", "local_graph"}
+    graph_sources = sum(1 for source in sources if str(source.get("source_type") or "") in graph_types)
+    dify_sources = sum(1 for source in sources if str(source.get("source_type") or "dify") == "dify")
+    snippet_sources = sum(1 for source in sources if str(source.get("source_type") or "") == "snippet")
+    relation_sources = sum(1 for source in sources if str(source.get("source_type") or "") == "relation")
+    await db.execute(
+        """
+        INSERT INTO library_qa_events (
+            qa_id, question, answer_chars, source_types, graph_sources,
+            dify_sources, snippet_sources, relation_sources, search_method
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"qa_{uuid.uuid4().hex}",
+            question[:2000],
+            len(markdown or ""),
+            json.dumps(source_types, ensure_ascii=False),
+            graph_sources,
+            dify_sources,
+            snippet_sources,
+            relation_sources,
+            search_method,
+        ),
+    )
+
+
 async def answer_corpus_question(
     question: str,
     *,
@@ -103,34 +139,52 @@ async def answer_corpus_question(
     language: str = "en",
     llm_model: str = "",
     dataset_id: str | None = None,
+    graph_only: bool = False,
 ) -> dict[str, Any]:
     """Retrieve passages from the library and synthesise a cited answer.
 
     Returns ``{markdown, sources, blocks_used, search_method, question}``.
-    Raises :class:`dify_client.DifyError` if retrieval fails (the caller maps it
-    to an HTTP error).
+    Dify retrieval is optional: disabled/unreachable Dify falls back to local
+    graph records instead of failing the request.
     """
     question = (question or "").strip()
-    method = (search_method or get_settings().dify_search_method or "keyword_search").strip()
+    settings = get_settings()
+    method = (search_method or settings.dify_search_method or "keyword_search").strip()
     t0 = time.perf_counter()
 
-    records = await dify_client.search_records(
-        question, top_k=top_k, search_method=method, dataset_id=dataset_id
-    )
+    graph_records = await search_local_graph_records(question, limit=max(3, top_k))
+    dify_records: list[dict[str, Any]] = []
+    effective_method = "graph_only" if graph_only or not settings.dify_enabled else method
+    if not graph_only and settings.dify_enabled:
+        try:
+            dify_records = await dify_client.search_records(
+                question, top_k=top_k, search_method=method, dataset_id=dataset_id
+            )
+        except dify_client.DifyError as exc:
+            logger.warning(
+                "corpus_qa: Dify retrieval failed; falling back to local graph "
+                "(status=%s, detail=%r)",
+                exc.upstream_status,
+                exc.detail,
+            )
+            effective_method = "graph_fallback"
+    records = graph_records + dify_records
     logger.info(
-        "corpus_qa: retrieved %d records (method=%s) in %.2fs for q=%r",
-        len(records), method, time.perf_counter() - t0, question[:120],
+        "corpus_qa: retrieved %d local + %d dify records (method=%s) in %.2fs for q=%r",
+        len(graph_records), len(dify_records), effective_method, time.perf_counter() - t0, question[:120],
     )
 
     context, sources = _format_context(records)
     if not context:
-        return {
+        result = {
             "markdown": _no_results_markdown(language),
             "sources": [],
             "blocks_used": 0,
-            "search_method": method,
+            "search_method": effective_method,
             "question": question,
         }
+        await _record_qa_event(question, result["markdown"], [], effective_method)
+        return result
 
     system_prompt = _SYSTEM_PROMPT_ZH if language == "zh" else _SYSTEM_PROMPT_EN
     if language == "zh":
@@ -152,10 +206,12 @@ async def answer_corpus_question(
         time.perf_counter() - t_llm, len(sources), len(markdown),
     )
 
-    return {
+    result = {
         "markdown": markdown,
         "sources": sources,
         "blocks_used": len(sources),
-        "search_method": method,
+        "search_method": effective_method,
         "question": question,
     }
+    await _record_qa_event(question, markdown, sources, effective_method)
+    return result

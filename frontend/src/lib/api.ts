@@ -16,6 +16,7 @@ import type {
   PaperSyncStatusResponse,
   DifySyncStatus,
   DiscoveryRelationStatusRequest,
+  DiscoveryGapStatusRequest,
   PapersDiscovery,
   RunCreate,
   RunResponse,
@@ -56,8 +57,11 @@ import type {
   KnowledgeSpaceUpdateRequest,
   KnowledgeSpacesResponse,
   WritingSnippet,
+  ComparisonTableRequest,
+  ComparisonTableResponse,
   WritingSnippetCreateRequest,
   WritingSnippetUpdateRequest,
+  RelatedWorkComposeRequest,
   LocalSearchMode,
   LocalSearchResponse,
   KnowledgeHealth,
@@ -90,6 +94,11 @@ import type {
 import { getOwnerToken } from "./owner";
 
 const API_BASE = "/api";
+const RATE_LIMIT_WARN_MS = 15000;
+const RATE_LIMIT_MAX_BACKOFF_MS = 30000;
+let lastRateLimitWarnAt = 0;
+let rateLimitBackoffMs = 1000;
+let rateLimitResumeAt = 0;
 
 // SSE/EventSource must connect directly to backend — Next.js rewrite proxy
 // buffers streaming responses, preventing real-time SSE delivery.
@@ -107,6 +116,10 @@ async function requestFromBackend<T>(path: string, init?: RequestInit): Promise<
 }
 
 async function requestFromBase<T>(base: string, path: string, init?: RequestInit): Promise<T> {
+  const waitMs = rateLimitResumeAt - Date.now();
+  if (waitMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
   const res = await fetch(`${base}${path}`, init);
   if (!res.ok) {
     const body = await res.text();
@@ -119,8 +132,19 @@ async function requestFromBase<T>(base: string, path: string, init?: RequestInit
     } catch {
       // Keep the raw response body for non-JSON errors.
     }
+    if (res.status === 429) {
+      const now = Date.now();
+      if (now - lastRateLimitWarnAt > RATE_LIMIT_WARN_MS) {
+        console.warn(`API 429 rate limited for ${path}; backing off ${rateLimitBackoffMs}ms`);
+        lastRateLimitWarnAt = now;
+      }
+      rateLimitResumeAt = now + rateLimitBackoffMs;
+      rateLimitBackoffMs = Math.min(RATE_LIMIT_MAX_BACKOFF_MS, rateLimitBackoffMs * 2);
+    }
     throw new Error(`API ${res.status}: ${detail}`);
   }
+  rateLimitBackoffMs = 1000;
+  rateLimitResumeAt = 0;
   return res.json();
 }
 
@@ -194,6 +218,10 @@ export async function refreshDailyRecommendations(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export async function getDailyRefreshStatus(jobId: string): Promise<DailyRecommendationRefreshResponse> {
+  return request(`/daily/refresh/${jobId}`);
 }
 
 export async function updateDailyRecommendationFeedback(
@@ -451,8 +479,19 @@ export async function updateDiscoveryRelationStatus(
   });
 }
 
-export async function getPaper(paperId: string): Promise<PaperResponse> {
-  return request(`/papers/${paperId}`);
+export async function updateDiscoveryGapStatus(
+  gapId: string,
+  body: DiscoveryGapStatusRequest,
+): Promise<PapersDiscovery> {
+  return request(`/papers/discovery/gaps/${gapId}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getPaper(paperId: string, signal?: AbortSignal): Promise<PaperResponse> {
+  return request(`/papers/${paperId}`, { signal });
 }
 
 export async function getPaperSyncStatus(paperId: string): Promise<PaperSyncStatusResponse> {
@@ -511,12 +550,12 @@ export async function createRun(body: RunCreate): Promise<RunResponse> {
   });
 }
 
-export async function getRun(runId: string): Promise<RunResponse> {
-  return request(`/runs/${runId}`);
+export async function getRun(runId: string, signal?: AbortSignal): Promise<RunResponse> {
+  return request(`/runs/${runId}`, { signal });
 }
 
-export async function getRunOutput(runId: string): Promise<RunOutputResponse> {
-  return request(`/runs/${runId}/output`);
+export async function getRunOutput(runId: string, signal?: AbortSignal): Promise<RunOutputResponse> {
+  return request(`/runs/${runId}/output`, { signal });
 }
 
 export async function listPaperRuns(paperId: string): Promise<RunResponse[]> {
@@ -776,6 +815,26 @@ export async function deleteWritingSnippet(snippetId: string): Promise<void> {
   }
 }
 
+export async function composeRelatedWork(
+  body: RelatedWorkComposeRequest,
+): Promise<WritingSnippet> {
+  return request("/writing/compose-related-work", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function buildComparisonTable(
+  body: ComparisonTableRequest,
+): Promise<ComparisonTableResponse> {
+  return request("/writing/comparison-table", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function localLibrarySearch(
   mode: LocalSearchMode,
   query: string,
@@ -799,10 +858,15 @@ export async function fixKnowledgeHealthIssue(
   });
 }
 
-export async function exportWritingMarkdown(sectionHint = ""): Promise<ExportResponse> {
+export async function exportWritingMarkdown(sectionHint = "", mode: "traceable" | "clean" = "traceable"): Promise<ExportResponse> {
   const qs = new URLSearchParams();
   if (sectionHint) qs.set("section_hint", sectionHint);
+  qs.set("mode", mode);
   return request(`/writing/export/markdown${qs.toString() ? `?${qs}` : ""}`);
+}
+
+export async function exportObsidianMarkdown(): Promise<ExportResponse> {
+  return request("/writing/export/obsidian");
 }
 
 export async function exportPapersBibtex(collectionId = ""): Promise<ExportResponse> {
@@ -815,6 +879,12 @@ export async function exportPapersRis(collectionId = ""): Promise<ExportResponse
   const qs = new URLSearchParams();
   if (collectionId) qs.set("collection_id", collectionId);
   return request(`/papers/export/ris${qs.toString() ? `?${qs}` : ""}`);
+}
+
+export async function exportPapersZoteroCslJson(collectionId = ""): Promise<ExportResponse> {
+  const qs = new URLSearchParams();
+  if (collectionId) qs.set("collection_id", collectionId);
+  return request(`/papers/export/zotero-csl-json${qs.toString() ? `?${qs}` : ""}`);
 }
 
 export async function importReferences(body: ReferenceImportRequest): Promise<ImportResponse> {

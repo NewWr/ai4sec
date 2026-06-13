@@ -173,6 +173,15 @@ def _safe_error(exc: Exception, *, api_key: str) -> str:
     return text
 
 
+def _should_try_next_probe(endpoint: str, status_code: int, body: str) -> bool:
+    if status_code in {404, 405, 422}:
+        return True
+    if endpoint.startswith("responses") and status_code == 400:
+        lowered = body.lower()
+        return any(token in lowered for token in ("reasoning", "unsupported", "unknown", "parameter", "responses"))
+    return False
+
+
 async def test_llm_connection(config: LLMRuntimeConfig) -> dict[str, object]:
     if not config.base_url:
         raise ValueError("LLM base_url must not be empty")
@@ -192,17 +201,32 @@ async def test_llm_connection(config: LLMRuntimeConfig) -> dict[str, object]:
         "temperature": 0,
         "reasoning": {"effort": config.reasoning_effort},
     }
+    responses_plain_payload = {
+        "model": model,
+        "input": [{"role": "user", "content": "Reply with OK."}],
+        "temperature": 0,
+    }
+    chat_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "temperature": 0,
+    }
     timeout = httpx.Timeout(connect=8.0, read=20.0, write=8.0, pool=8.0)
-    attempts = [("responses", f"{config.base_url}/responses", responses_payload)]
+    attempts = [
+        ("responses", f"{config.base_url}/responses", responses_payload),
+        ("responses-plain", f"{config.base_url}/responses", responses_plain_payload),
+        ("chat/completions", f"{config.base_url}/chat/completions", chat_payload),
+    ]
     errors: list[str] = []
     async with httpx.AsyncClient(timeout=timeout) as client:
-        for endpoint, url, payload in attempts:
+        for index, (endpoint, url, payload) in enumerate(attempts):
             started = time.perf_counter()
             try:
                 resp = await client.post(url, headers=headers, json=payload)
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
-                if resp.status_code in {404, 405, 422} and endpoint == "chat/completions":
-                    errors.append(f"{endpoint}: HTTP {resp.status_code}")
+                body = resp.text[:800].replace(config.api_key, "[redacted]")
+                if index < len(attempts) - 1 and _should_try_next_probe(endpoint, resp.status_code, body):
+                    errors.append(f"{endpoint}: HTTP {resp.status_code} {body[:240]}")
                     continue
                 if resp.status_code >= 400:
                     return {
@@ -213,7 +237,7 @@ async def test_llm_connection(config: LLMRuntimeConfig) -> dict[str, object]:
                         "status_code": resp.status_code,
                         "elapsed_ms": elapsed_ms,
                         "message": "",
-                        "error": resp.text[:800].replace(config.api_key, "[redacted]"),
+                        "error": body,
                     }
                 data = resp.json()
                 text = _extract_probe_text(data)

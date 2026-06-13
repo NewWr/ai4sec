@@ -47,10 +47,16 @@ if git grep -n -I -E \
 fi
 
 echo "Checking known private deployment examples..."
-if git grep -n -I -E 'DIFY_API_BASE=http://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|DIFY_DEFAULT_DATASET_ID=[0-9a-fA-F-]{36}' -- \
+if git grep -n -I -E 'DIFY_API_BASE=http://([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)' -- \
+  ':!.env.example' \
+  ':!docs/PUBLIC_RELEASE.md' \
+  | rg -v 'DIFY_API_BASE=http://(127\.|0\.0\.0\.0|localhost)' ; then
+  fail "private deployment address found"
+fi
+if git grep -n -I -E 'DIFY_DEFAULT_DATASET_ID=[0-9a-fA-F-]{36}' -- \
   ':!.env.example' \
   ':!docs/PUBLIC_RELEASE.md'; then
-  fail "private deployment address or dataset id found"
+  fail "private dataset id found"
 fi
 
 echo "Checking Git history for previously committed private artifacts..."

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -40,6 +41,7 @@ LENS_SLOTS: list[str] = [
     "results",
     "limitation",
 ]
+LENS_SECTION_CONCURRENCY = 3
 
 _SECTION_NUM_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)")
 
@@ -72,6 +74,31 @@ def _section_match_keys(paper_ir: PaperIR) -> dict[str, str]:
                     titles.append(anc_title)
         keys[section.title] = " ".join(titles).lower()
     return keys
+
+
+def build_lens_section_contexts(context_by_section: dict[str, str]) -> list[dict[str, Any]]:
+    roles = {
+        "overview": {"card_types": ["claim", "limitation", "question"], "label": "framing"},
+        "method_pipeline": {"card_types": ["method"], "label": "method"},
+        "method_formulas": {"card_types": ["method", "metric"], "label": "formal_method"},
+        "experiments": {"card_types": ["dataset", "metric", "result"], "label": "evaluation"},
+        "assessment": {"card_types": ["limitation", "question", "idea"], "label": "assessment"},
+    }
+    contexts: list[dict[str, Any]] = []
+    for key, text in context_by_section.items():
+        clean = str(text or "").strip()
+        if not clean:
+            continue
+        role = roles.get(key, {"card_types": ["claim"], "label": key})
+        contexts.append(
+            {
+                "section_key": key,
+                "label": role["label"],
+                "target_card_types": role["card_types"],
+                "text": clean[:5000],
+            }
+        )
+    return contexts
 
 
 def _extract_equations(paper_ir: PaperIR) -> list[dict[str, Any]]:
@@ -752,12 +779,10 @@ async def run_logic_lens(state: MainGraphState) -> dict[str, Any]:
     llm = get_llm_service()
     model = state.get("llm_model", "")
     run_id = state.get("run_id", "")
-    progress_entries: list[dict[str, Any]] = []
-    sections: list[str] = []
+    specs = _lens_section_specs(language)
 
-    for spec in _lens_section_specs(language):
+    async def _run_section(index: int, spec: dict[str, Any]) -> tuple[int, str, dict[str, Any]]:
         section_context = context_by_section[spec["key"]]
-        await _emit_progress(run_id, spec["step"], "running")
 
         if language == "zh":
             user_content = (
@@ -797,8 +822,6 @@ async def run_logic_lens(state: MainGraphState) -> dict[str, Any]:
 
         if spec["key"] == "method_formulas":
             section_markdown = _strip_repeated_heading(section_markdown, spec["title"])
-        sections.append(section_markdown.strip())
-        progress_entries.append({"step": spec["step"], "status": "done"})
         await _emit_progress(
             run_id,
             spec["step"],
@@ -810,6 +833,27 @@ async def run_logic_lens(state: MainGraphState) -> dict[str, Any]:
             f"[{paper_id}] lens: Section {spec['key']} returned in "
             f"{time.perf_counter()-t_section:.1f}s — {len(section_markdown)} chars"
         )
+        return index, section_markdown.strip(), {"step": spec["step"], "status": "done"}
+
+    async def _run_limited(index: int, spec: dict[str, Any], semaphore: asyncio.Semaphore):
+        await _emit_progress(run_id, spec["step"], "running")
+        async with semaphore:
+            return await _run_section(index, spec)
+
+    semaphore = asyncio.Semaphore(LENS_SECTION_CONCURRENCY)
+    tasks = [asyncio.create_task(_run_limited(i, spec, semaphore)) for i, spec in enumerate(specs)]
+    try:
+        results = await asyncio.gather(*tasks)
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    ordered = sorted(results, key=lambda item: item[0])
+    sections = [section for _, section, _ in ordered]
+    progress_entries = [entry for _, _, entry in ordered]
 
     supplementary_used = _format_supplementary_used(supplementary_index, language)
     markdown = "\n\n".join(s for s in [*sections, supplementary_used] if s)
@@ -847,6 +891,7 @@ async def run_logic_lens(state: MainGraphState) -> dict[str, Any]:
             "supplementary_index": supplementary_index.model_dump(),
             "supplementary_needs": infer_supplementary_needs(supplementary_index),
             "citation_audit": audit,
+            "lens_section_contexts": build_lens_section_contexts(context_by_section),
             "evidence_pool": evidence_pool,
             "evidence_anchors": evidence_anchors,
         }, ensure_ascii=False),

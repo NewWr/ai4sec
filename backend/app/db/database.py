@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -13,11 +14,20 @@ logger = logging.getLogger("scholar.db")
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _db_path: Path | None = None
 _conn: aiosqlite.Connection | None = None
+_read_pool: list[aiosqlite.Connection] = []
+_read_pool_next = 0
+_READ_POOL_SIZE = 4
 _write_lock = asyncio.Lock()
+
+
+def _is_duplicate_column_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and "duplicate column name" in str(exc).lower()
 
 
 def set_db_path(path: Path) -> None:
     global _db_path
+    if _conn is not None or _read_pool:
+        raise RuntimeError("Cannot change database path while connections are open")
     _db_path = path
 
 
@@ -42,6 +52,24 @@ async def _configure_connection(conn: aiosqlite.Connection) -> None:
 async def _connect() -> aiosqlite.Connection:
     conn = await aiosqlite.connect(_get_db_path())
     await _configure_connection(conn)
+    return conn
+
+
+async def _connect_readonly() -> aiosqlite.Connection:
+    path = _get_db_path().resolve()
+    conn = await aiosqlite.connect(f"file:{path}?mode=ro&immutable=0", uri=True)
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA busy_timeout=5000")
+    await conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+async def _get_read_conn() -> aiosqlite.Connection:
+    global _read_pool_next
+    if not _read_pool:
+        return await _connect_readonly()
+    conn = _read_pool[_read_pool_next % len(_read_pool)]
+    _read_pool_next += 1
     return conn
 
 
@@ -86,18 +114,22 @@ async def _ensure_analysis_dify_syncs_multi_dataset(conn: aiosqlite.Connection) 
 
 async def open_db() -> None:
     """Open the process-level SQLite connection used by the FastAPI app."""
-    global _conn
+    global _conn, _read_pool
     if _conn is not None:
         return
     _conn = await _connect()
+    _read_pool = [await _connect_readonly() for _ in range(_READ_POOL_SIZE)]
 
 
 async def close_db() -> None:
     """Close the process-level SQLite connection if it is open."""
-    global _conn
-    if _conn is None:
-        return
-    await _conn.close()
+    global _conn, _read_pool, _read_pool_next
+    for conn in _read_pool:
+        await conn.close()
+    _read_pool = []
+    _read_pool_next = 0
+    if _conn is not None:
+        await _conn.close()
     _conn = None
 
 
@@ -126,14 +158,24 @@ async def init_db() -> None:
             try:
                 await db.execute(f"ALTER TABLE papers ADD COLUMN {col} {col_def}")
                 await db.commit()
-            except Exception:
-                pass  # column already exists
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" in str(exc).lower():
+                    logger.debug("papers.%s column already exists", col)
+                else:
+                    logger.warning("Failed to add papers.%s column: %s", col, exc)
+            except Exception as exc:
+                logger.warning("Failed to add papers.%s column: %s", col, exc)
         # Migrate runs table: add language column if missing
         try:
             await db.execute("ALTER TABLE runs ADD COLUMN language TEXT NOT NULL DEFAULT 'en'")
             await db.commit()
-        except Exception:
-            pass  # column already exists
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" in str(exc).lower():
+                logger.debug("runs.language column already exists")
+            else:
+                logger.warning("Failed to add runs.language column: %s", exc)
+        except Exception as exc:
+            logger.warning("Failed to add runs.language column: %s", exc)
         # Migrate runs table: add user_question + detected_intent for Smart Q&A,
         # current_step + progress_json for resumable progress display.
         for col, col_def in [
@@ -146,8 +188,13 @@ async def init_db() -> None:
             try:
                 await db.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_def}")
                 await db.commit()
-            except Exception:
-                pass  # column already exists
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" in str(exc).lower():
+                    logger.debug("runs.%s column already exists", col)
+                else:
+                    logger.warning("Failed to add runs.%s column: %s", col, exc)
+            except Exception as exc:
+                logger.warning("Failed to add runs.%s column: %s", col, exc)
         for index_sql in (
             "CREATE INDEX IF NOT EXISTS idx_runs_status_started ON runs(status, started_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC)",
@@ -188,8 +235,11 @@ async def init_db() -> None:
             try:
                 await db.execute(f"ALTER TABLE mineru_parses ADD COLUMN {col} {col_def}")
                 await db.commit()
-            except Exception:
-                pass  # column already exists
+            except Exception as exc:
+                if _is_duplicate_column_error(exc):
+                    logger.debug("mineru_parses.%s column already exists", col)
+                else:
+                    logger.warning("Failed to add mineru_parses.%s column: %s", col, exc)
         # Optional FTS index for Smart Q&A hierarchy nodes. The regular
         # paper_nodes table remains the source of truth if FTS5 is unavailable.
         try:
@@ -198,8 +248,8 @@ async def init_db() -> None:
                 "USING fts5(node_id UNINDEXED, paper_id UNINDEXED, title_path, text_for_search)"
             )
             await db.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("FTS5 paper_node_fts unavailable or failed to initialize: %s", exc)
         try:
             await db.execute(
                 """
@@ -273,6 +323,15 @@ async def init_db() -> None:
         except Exception:
             logger.exception("Failed to create run_progress_events table")
         try:
+            cursor = await db.execute(
+                "DELETE FROM run_progress_events WHERE created_at < datetime('now', '-7 days')"
+            )
+            await db.commit()
+            if cursor.rowcount:
+                logger.info("Cleaned %d old run_progress_events row(s)", cursor.rowcount)
+        except Exception:
+            logger.exception("Failed to clean old run_progress_events rows")
+        try:
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS knowledge_spaces (
@@ -282,6 +341,7 @@ async def init_db() -> None:
                     space_type      TEXT NOT NULL DEFAULT '',
                     description     TEXT NOT NULL DEFAULT '',
                     description_zh  TEXT NOT NULL DEFAULT '',
+                    research_profile TEXT NOT NULL DEFAULT '',
                     dify_dataset_id TEXT NOT NULL DEFAULT '',
                     is_system       INTEGER NOT NULL DEFAULT 0,
                     sort_order      INTEGER NOT NULL DEFAULT 0,
@@ -290,6 +350,17 @@ async def init_db() -> None:
                 )
                 """
             )
+            for col, col_def in [
+                ("research_profile", "TEXT NOT NULL DEFAULT ''"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE knowledge_spaces ADD COLUMN {col} {col_def}")
+                    await db.commit()
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("knowledge_spaces.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add knowledge_spaces.%s column: %s", col, exc)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_spaces_type "
                 "ON knowledge_spaces(space_type, sort_order)"
@@ -346,12 +417,24 @@ async def init_db() -> None:
                     status            TEXT NOT NULL DEFAULT 'unverified',
                     revision_history  TEXT NOT NULL DEFAULT '[]',
                     source_hash       TEXT NOT NULL DEFAULT '',
+                    source_run_id     TEXT NOT NULL DEFAULT '',
                     evidence_version  INTEGER NOT NULL DEFAULT 1,
                     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
                 )
                 """
             )
+            for col, col_def in [
+                ("source_run_id", "TEXT NOT NULL DEFAULT ''"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE research_evidence_items ADD COLUMN {col} {col_def}")
+                    await db.commit()
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("research_evidence_items.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add research_evidence_items.%s column: %s", col, exc)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_research_evidence_paper "
                 "ON research_evidence_items(paper_id, evidence_type)"
@@ -362,25 +445,39 @@ async def init_db() -> None:
             )
             await db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS research_relation_edges (
-                    relation_id          TEXT PRIMARY KEY,
-                    relation_type        TEXT NOT NULL DEFAULT '',
-                    source_paper_id      TEXT NOT NULL REFERENCES papers(paper_id),
-                    target_paper_id      TEXT NOT NULL REFERENCES papers(paper_id),
-                    source_evidence_ids  TEXT NOT NULL DEFAULT '[]',
-                    target_evidence_ids  TEXT NOT NULL DEFAULT '[]',
-                    rule_id              TEXT NOT NULL DEFAULT '',
-                    positive_checks      TEXT NOT NULL DEFAULT '[]',
-                    negative_checks      TEXT NOT NULL DEFAULT '[]',
-                    counter_evidence_ids TEXT NOT NULL DEFAULT '[]',
-                    confidence           REAL NOT NULL DEFAULT 0.0,
-                    status               TEXT NOT NULL DEFAULT 'unverified',
-                    relation_version     INTEGER NOT NULL DEFAULT 1,
+                    CREATE TABLE IF NOT EXISTS research_relation_edges (
+                        relation_id          TEXT PRIMARY KEY,
+                        relation_type        TEXT NOT NULL DEFAULT '',
+                        source_paper_id      TEXT NOT NULL REFERENCES papers(paper_id),
+                        target_paper_id      TEXT NOT NULL REFERENCES papers(paper_id),
+                        source_evidence_ids  TEXT NOT NULL DEFAULT '[]',
+                        target_evidence_ids  TEXT NOT NULL DEFAULT '[]',
+                        rule_id              TEXT NOT NULL DEFAULT '',
+                        positive_checks      TEXT NOT NULL DEFAULT '[]',
+                        negative_checks      TEXT NOT NULL DEFAULT '[]',
+                        counter_evidence_ids TEXT NOT NULL DEFAULT '[]',
+                        comparability_json   TEXT NOT NULL DEFAULT '{}',
+                        confidence           REAL NOT NULL DEFAULT 0.0,
+                        status               TEXT NOT NULL DEFAULT 'unverified',
+                        verifier_version     TEXT NOT NULL DEFAULT '',
+                        relation_version     INTEGER NOT NULL DEFAULT 1,
                     created_at           TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
                 )
                 """
             )
+            for col, col_def in [
+                ("verifier_version", "TEXT NOT NULL DEFAULT ''"),
+                ("comparability_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE research_relation_edges ADD COLUMN {col} {col_def}")
+                    await db.commit()
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("research_relation_edges.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add research_relation_edges.%s column: %s", col, exc)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_research_relation_source "
                 "ON research_relation_edges(source_paper_id, relation_type)"
@@ -406,17 +503,89 @@ async def init_db() -> None:
                     experiment_cost       REAL NOT NULL DEFAULT 0.0,
                     domain_value          REAL NOT NULL DEFAULT 0.0,
                     status                TEXT NOT NULL DEFAULT 'candidate',
-                    rejection_reason      TEXT NOT NULL DEFAULT '',
-                    minimum_experiment    TEXT NOT NULL DEFAULT '',
-                    gap_version           INTEGER NOT NULL DEFAULT 1,
-                    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+                        rejection_reason      TEXT NOT NULL DEFAULT '',
+                        minimum_experiment    TEXT NOT NULL DEFAULT '',
+                        hit_by_paper_ids      TEXT NOT NULL DEFAULT '[]',
+                        related_synthesis_card_ids TEXT NOT NULL DEFAULT '[]',
+                        related_card_ids      TEXT NOT NULL DEFAULT '[]',
+                        research_question     TEXT NOT NULL DEFAULT '',
+                        target_task           TEXT NOT NULL DEFAULT '',
+                        constraints_json      TEXT NOT NULL DEFAULT '[]',
+                        baseline_plan         TEXT NOT NULL DEFAULT '',
+                        contribution          TEXT NOT NULL DEFAULT '',
+                        target_venue          TEXT NOT NULL DEFAULT '',
+                        history_json          TEXT NOT NULL DEFAULT '[]',
+                        gap_version           INTEGER NOT NULL DEFAULT 1,
+                        created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            for col, col_def in [
+                ("hit_by_paper_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                ("related_synthesis_card_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                ("related_card_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                ("research_question", "TEXT NOT NULL DEFAULT ''"),
+                ("target_task", "TEXT NOT NULL DEFAULT ''"),
+                ("constraints_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("baseline_plan", "TEXT NOT NULL DEFAULT ''"),
+                ("contribution", "TEXT NOT NULL DEFAULT ''"),
+                ("target_venue", "TEXT NOT NULL DEFAULT ''"),
+                ("history_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE research_gaps ADD COLUMN {col} {col_def}")
+                    await db.commit()
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("research_gaps.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add research_gaps.%s column: %s", col, exc)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_research_gaps_status "
+                "ON research_gaps(status, updated_at DESC)"
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS research_asset_events (
+                    event_id    TEXT PRIMARY KEY,
+                    event_type  TEXT NOT NULL DEFAULT '',
+                    asset_type  TEXT NOT NULL DEFAULT '',
+                    asset_id    TEXT NOT NULL DEFAULT '',
+                    paper_id    TEXT NOT NULL DEFAULT '',
+                    source      TEXT NOT NULL DEFAULT '',
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
                 )
                 """
             )
             await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_research_gaps_status "
-                "ON research_gaps(status, updated_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_research_asset_events_asset "
+                "ON research_asset_events(asset_type, asset_id, created_at DESC)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_research_asset_events_type "
+                "ON research_asset_events(event_type, created_at DESC)"
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS library_qa_events (
+                    qa_id            TEXT PRIMARY KEY,
+                    question         TEXT NOT NULL DEFAULT '',
+                    answer_chars     INTEGER NOT NULL DEFAULT 0,
+                    source_types     TEXT NOT NULL DEFAULT '[]',
+                    graph_sources    INTEGER NOT NULL DEFAULT 0,
+                    dify_sources     INTEGER NOT NULL DEFAULT 0,
+                    snippet_sources  INTEGER NOT NULL DEFAULT 0,
+                    relation_sources INTEGER NOT NULL DEFAULT 0,
+                    search_method    TEXT NOT NULL DEFAULT '',
+                    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_library_qa_events_created "
+                "ON library_qa_events(created_at DESC)"
             )
             await db.commit()
         except Exception:
@@ -496,8 +665,11 @@ async def init_db() -> None:
                 try:
                     await db.execute(f"ALTER TABLE daily_recommendation_items ADD COLUMN {col} {col_def}")
                     await db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("daily_recommendation_items.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add daily_recommendation_items.%s column: %s", col, exc)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_daily_items_date_topic "
                 "ON daily_recommendation_items(fetched_date, topic_id, score DESC)"
@@ -673,6 +845,8 @@ async def init_db() -> None:
                     supporting_card_ids TEXT NOT NULL DEFAULT '[]',
                     supporting_paper_ids TEXT NOT NULL DEFAULT '[]',
                     evidence_strength TEXT NOT NULL DEFAULT '',
+                    card_version   INTEGER NOT NULL DEFAULT 1,
+                    revision_history TEXT NOT NULL DEFAULT '[]',
                     reviewed_at    TEXT NOT NULL DEFAULT '',
                     reviewed_by    TEXT NOT NULL DEFAULT '',
                     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
@@ -708,14 +882,19 @@ async def init_db() -> None:
                 ("supporting_card_ids", "TEXT NOT NULL DEFAULT '[]'"),
                 ("supporting_paper_ids", "TEXT NOT NULL DEFAULT '[]'"),
                 ("evidence_strength", "TEXT NOT NULL DEFAULT ''"),
+                ("card_version", "INTEGER NOT NULL DEFAULT 1"),
+                ("revision_history", "TEXT NOT NULL DEFAULT '[]'"),
                 ("reviewed_at", "TEXT NOT NULL DEFAULT ''"),
                 ("reviewed_by", "TEXT NOT NULL DEFAULT ''"),
             ]:
                 try:
                     await db.execute(f"ALTER TABLE knowledge_cards ADD COLUMN {col} {col_def}")
                     await db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("knowledge_cards.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add knowledge_cards.%s column: %s", col, exc)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_cards_run "
                 "ON knowledge_cards(run_id, status)"
@@ -796,6 +975,7 @@ async def init_db() -> None:
                     cards_created     INTEGER NOT NULL DEFAULT 0,
                     cards_skipped     INTEGER NOT NULL DEFAULT 0,
                     duplicate_count   INTEGER NOT NULL DEFAULT 0,
+                    critique_summary_json TEXT NOT NULL DEFAULT '{}',
                     error_msg         TEXT NOT NULL DEFAULT '',
                     raw_output_json   TEXT NOT NULL DEFAULT '[]',
                     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
@@ -803,6 +983,14 @@ async def init_db() -> None:
                 )
                 """
             )
+            try:
+                await db.execute("ALTER TABLE knowledge_card_generations ADD COLUMN critique_summary_json TEXT NOT NULL DEFAULT '{}'")
+                await db.commit()
+            except Exception as exc:
+                if _is_duplicate_column_error(exc):
+                    logger.debug("knowledge_card_generations.critique_summary_json column already exists")
+                else:
+                    logger.warning("Failed to add knowledge_card_generations.critique_summary_json column: %s", exc)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_card_generations_paper "
                 "ON knowledge_card_generations(paper_id, created_at DESC)"
@@ -827,18 +1015,23 @@ async def init_db() -> None:
             )
             await db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS writing_snippets (
-                    snippet_id     TEXT PRIMARY KEY,
-                    content        TEXT NOT NULL DEFAULT '',
-                    source_card_id TEXT NOT NULL DEFAULT '' REFERENCES knowledge_cards(card_id),
-                    paper_id       TEXT NOT NULL DEFAULT '' REFERENCES papers(paper_id),
-                    citation_key   TEXT NOT NULL DEFAULT '',
-                    source_page    INTEGER NOT NULL DEFAULT 0,
-                    source_quote   TEXT NOT NULL DEFAULT '',
-                    section_hint   TEXT NOT NULL DEFAULT 'related_work',
-                    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
-                )
+                    CREATE TABLE IF NOT EXISTS writing_snippets (
+                        snippet_id     TEXT PRIMARY KEY,
+                        content        TEXT NOT NULL DEFAULT '',
+                        source_card_id TEXT NOT NULL DEFAULT '' REFERENCES knowledge_cards(card_id),
+                        paper_id       TEXT NOT NULL DEFAULT '' REFERENCES papers(paper_id),
+                        citation_key   TEXT NOT NULL DEFAULT '',
+                        source_page    INTEGER NOT NULL DEFAULT 0,
+                        source_quote   TEXT NOT NULL DEFAULT '',
+                        section_hint   TEXT NOT NULL DEFAULT 'related_work',
+                        source_card_ids TEXT NOT NULL DEFAULT '[]',
+                        evidence_ids    TEXT NOT NULL DEFAULT '[]',
+                        paragraph_plan_json TEXT NOT NULL DEFAULT '{}',
+                        trace_mode      TEXT NOT NULL DEFAULT 'traceable',
+                        usage_count     INTEGER NOT NULL DEFAULT 0,
+                        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
                 """
             )
             await db.execute(
@@ -852,12 +1045,20 @@ async def init_db() -> None:
             for col, col_def in [
                 ("source_page", "INTEGER NOT NULL DEFAULT 0"),
                 ("source_quote", "TEXT NOT NULL DEFAULT ''"),
+                ("source_card_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                ("evidence_ids", "TEXT NOT NULL DEFAULT '[]'"),
+                ("paragraph_plan_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("trace_mode", "TEXT NOT NULL DEFAULT 'traceable'"),
+                ("usage_count", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 try:
                     await db.execute(f"ALTER TABLE writing_snippets ADD COLUMN {col} {col_def}")
                     await db.commit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if _is_duplicate_column_error(exc):
+                        logger.debug("writing_snippets.%s column already exists", col)
+                    else:
+                        logger.warning("Failed to add writing_snippets.%s column: %s", col, exc)
             await db.commit()
         except Exception:
             logger.exception("Failed to create long-term knowledge asset tables")
@@ -894,8 +1095,9 @@ async def execute_many(sql: str, params_seq: list[tuple[Any, ...]]) -> None:
 
 
 async def fetch_one(sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
-    if _conn is not None:
-        cursor = await _conn.execute(sql, params)
+    if _conn is not None and _read_pool:
+        conn = await _get_read_conn()
+        cursor = await conn.execute(sql, params)
         row = await cursor.fetchone()
         if row is None:
             return None
@@ -912,8 +1114,9 @@ async def fetch_one(sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | 
 
 
 async def fetch_all(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-    if _conn is not None:
-        cursor = await _conn.execute(sql, params)
+    if _conn is not None and _read_pool:
+        conn = await _get_read_conn()
+        cursor = await conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
     db = await _connect()
@@ -952,3 +1155,32 @@ async def transaction() -> AsyncIterator[aiosqlite.Connection]:
                 await conn.commit()
         finally:
             await conn.close()
+
+
+async def persist_run_event(run_id: str, event_type: str, data_json: str) -> int:
+    if not run_id:
+        return 0
+    event_type = (event_type or "progress").strip() or "progress"
+    async with _write_lock:
+        conn = _conn or await _connect()
+        should_close = _conn is None
+        try:
+            await conn.execute("BEGIN")
+            cursor = await conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM run_progress_events WHERE run_id = ?",
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+            seq = int(row[0] if row else 1)
+            await conn.execute(
+                "INSERT INTO run_progress_events (run_id, seq, event_type, data_json) VALUES (?, ?, ?, ?)",
+                (run_id, seq, event_type, data_json),
+            )
+            await conn.commit()
+            return seq
+        except Exception:
+            await conn.rollback()
+            raise
+        finally:
+            if should_close:
+                await conn.close()

@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  getDailyRefreshStatus,
   ingestDailyRecommendation,
   listDailyRecommendations,
   promoteDailyRecommendation,
+  refreshDailyRecommendations,
   updateDailyRecommendationFeedback,
 } from "@/lib/api";
 import type {
   DailyRecommendationItem,
   DailyRecommendationListResponse,
+  DailyRecommendationRefreshResponse,
   DailyRecommendationStatus,
   DailyRecommendationTopic,
   ReadingMode,
@@ -64,6 +67,11 @@ function translationHint(item: DailyRecommendationItem): string {
   return parts.join(" / ");
 }
 
+function scoreTags(item: DailyRecommendationItem): string[] {
+  const behavior = (item.score_detail.matched_behavior || []).slice(0, 4);
+  return behavior.map((term) => String(term)).filter(Boolean);
+}
+
 const PARSE_OPTIONS: Array<{ value: ReadingMode; label: string; desc: string }> = [
   { value: "lens", label: "Lens", desc: "结构化精读，适合判断是否值得深入阅读" },
   { value: "snap", label: "Snap", desc: "快速洞察，适合先获取核心结论" },
@@ -89,6 +97,7 @@ export default function DailyRecommendationsPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [ingestDraft, setIngestDraft] = useState<IngestDraft | null>(null);
+  const [refreshJob, setRefreshJob] = useState<DailyRecommendationRefreshResponse | null>(null);
 
   const topicById = useMemo(() => {
     const map = new Map<string, DailyRecommendationTopic>();
@@ -198,6 +207,47 @@ export default function DailyRecommendationsPage() {
     }
   }, [load]);
 
+  const startRefresh = useCallback(async () => {
+    setError("");
+    setMessage("");
+    try {
+      const job = await refreshDailyRecommendations({
+        date: date || undefined,
+        topic_id: topicId || undefined,
+        force: true,
+      });
+      setRefreshJob(job);
+      setMessage(`刷新任务已启动：${job.job_id}`);
+    } catch (err) {
+      setError(errMessage(err));
+    }
+  }, [date, topicId]);
+
+  useEffect(() => {
+    if (!refreshJob?.job_id || ["done", "failed"].includes(refreshJob.status)) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      getDailyRefreshStatus(refreshJob.job_id)
+        .then((job) => {
+          if (cancelled) return;
+          setRefreshJob(job);
+          if (job.status === "done") {
+            setMessage(`刷新完成：新增或更新 ${job.inserted_or_updated} 篇。`);
+            void load();
+          } else if (job.status === "failed") {
+            setError(job.message || "刷新失败");
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(errMessage(err));
+        });
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [load, refreshJob?.job_id, refreshJob?.status]);
+
   const counts = useMemo(() => {
     const ret: Record<DailyRecommendationStatus | "all", number> = {
       all: 0,
@@ -228,10 +278,22 @@ export default function DailyRecommendationsPage() {
           <h1 className="font-display text-2xl font-semibold tracking-tight">每日论文推荐</h1>
           <p className="mt-1 text-sm text-muted-foreground">默认按推荐日期倒序显示全部论文；系统每天 06:00 自动更新，候选论文需手动选择解析方式后入库。</p>
         </div>
+        <button
+          onClick={startRefresh}
+          disabled={Boolean(refreshJob?.job_id && !["done", "failed"].includes(refreshJob.status))}
+          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+        >
+          {refreshJob?.job_id && !["done", "failed"].includes(refreshJob.status) ? "刷新中" : "立即刷新"}
+        </button>
       </div>
 
       {error && <p className="mb-4 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
       {message && <p className="mb-4 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-sm text-primary">{message}</p>}
+      {refreshJob?.job_id && (
+        <p className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+          刷新任务 {refreshJob.job_id}：{refreshJob.status}，已抓取 {refreshJob.fetched}，新增或更新 {refreshJob.inserted_or_updated}。
+        </p>
+      )}
 
       <section className="mb-4 grid gap-3 rounded-xl border border-border bg-card p-3 soft-shadow md:grid-cols-[220px_1fr_160px_160px]">
         <div className="flex min-w-0 gap-2">
@@ -315,6 +377,8 @@ export default function DailyRecommendationsPage() {
           {filtered.map((item) => {
             const busy = Boolean(acting[item.item_id]);
             const hint = translationHint(item);
+            const behaviorTags = scoreTags(item);
+            const gapMatches = item.score_detail.matched_gaps || [];
             return (
               <article key={item.item_id} id={`daily-${item.item_id}`} className="rounded-xl border border-border bg-card p-4 soft-shadow">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -364,6 +428,26 @@ export default function DailyRecommendationsPage() {
                 <div className="mt-3 rounded-lg border border-primary/15 bg-primary/5 px-3 py-2 text-xs leading-5 text-primary">
                   {item.reason || "规则推荐"}
                 </div>
+
+                {(behaviorTags.length > 0 || gapMatches.length > 0) && (
+                  <div className="mt-3 flex flex-wrap gap-1.5 text-xs">
+                    {behaviorTags.map((term) => (
+                      <span key={`behavior-${item.item_id}-${term}`} className="rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-primary">
+                        行为 {term}
+                      </span>
+                    ))}
+                    {gapMatches.map((gap) => (
+                      <Link
+                        key={`gap-${item.item_id}-${gap.gap_id}`}
+                        href={`/synthesis#gap-${gap.gap_id}`}
+                        className="rounded-full border border-amber-300/50 bg-amber-100/70 px-2 py-0.5 text-amber-700 hover:bg-amber-100 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-300"
+                        title={(gap.matched_terms || []).join(", ")}
+                      >
+                        命中想法 {gap.title || gap.gap_id}
+                      </Link>
+                    ))}
+                  </div>
+                )}
 
                 {item.error_msg && (
                   <p className="mt-3 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">{item.error_msg}</p>
