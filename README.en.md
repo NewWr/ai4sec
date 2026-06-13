@@ -5,42 +5,53 @@
 <h1 align="center">AI4Sec · Local AI Research Workspace</h1>
 
 <p align="center">
-  A local workspace for security and AI research: paper discovery, PDF parsing, cited deep reading, corpus retrieval, knowledge cards, translation, knowledge-base sync, and maintenance checks.
+  A local workspace for security and AI research, covering paper intake, PDF parsing, evidence-grounded reading, cross-paper retrieval, knowledge cards, synthesis, writing export, and knowledge-base sync.
 </p>
 
 <p align="center">
   <a href="./README.md">中文 README</a>
 </p>
 
-## Capabilities
+## Current Capabilities
 
-- **Upload and deep-read papers**: upload PDFs, parse text/equations/tables/figures with MinerU, and generate AI reports with page-level evidence citations.
-- **Four analysis modes**: Insight Snap for triage, Logic Lens for formulas/algorithms/experiments, Research Sphere for citation networks and research gaps, and Smart Q&A for intent-based routing.
-- **Local paper library**: manage metadata, collections, reading status, analysis history, Dify sync state, deletion, and retry operations.
-- **Daily recommendations**: fetch arXiv candidates, score by topic, translate, collect feedback, import selected papers, and launch follow-up analysis.
-- **Knowledge spaces and cards**: store claims, methods, datasets, metrics, results, limitations, questions, and writing snippets; bind different spaces to different Dify datasets.
-- **Corpus search and cross-paper Q&A**: retrieve over your own paper corpus through a Dify proxy and synthesize answers from cited passages.
-- **Translation and runtime settings**: optional DeepLX translation; configure OpenAI-compatible LLM base URL, model list, API key, and reasoning effort from the web UI.
-- **Health checks**: inspect parsing, sync, metadata, knowledge assets, and index status across the local corpus.
+- **Paper intake and parsing**: upload PDFs or ingest papers from daily recommendations, parse text, equations, tables, figures, and supplementary material with MinerU, then persist everything locally.
+- **Four analysis workflows**: Insight Snap for quick triage, Logic Lens for structured deep reading, Research Sphere for citation and related-work expansion, and Smart Q&A for intent-based routing to triage, deep reading, landscape analysis, or single-paper Q&A.
+- **Evidence-grounded knowledge assets**: generate claim, method, dataset, metric, result, limitation, question, and writing-snippet cards with page references, source snippets, and relationship metadata.
+- **Local library and knowledge spaces**: manage metadata, collections, reading status, notes, annotations, AI review marks, Dify sync state, and bind different knowledge spaces to different Dify datasets.
+- **Daily arXiv recommendations**: fetch candidates by topic, score, translate, collect feedback, ingest selected papers, promote them to knowledge spaces, and launch follow-up analysis.
+- **Cross-paper retrieval and synthesis**: use the local graph and optional Dify RAG for corpus search, cross-paper Q&A, conflict discovery, research-gap candidates, and synthesis cards.
+- **Writing and export**: compose related-work/method/experiment/limitation snippets from verified cards, build comparison tables, and export Markdown, Obsidian, BibTeX, RIS, and Zotero CSL JSON.
+- **Operations**: runtime LLM settings, model connectivity tests, DeepLX translation, health checks, cache maintenance, rate limiting, and public-release checks.
+
+## UI Routes
+
+| Route | Purpose |
+|---|---|
+| `/upload` | Upload PDFs and create paper records |
+| `/daily` | Daily recommendations, feedback, ingestion, and promotion |
+| `/papers` | Paper list, analysis entry points, recent runs, and PDF viewing |
+| `/library` | Local library, collections, states, sync, and deletion |
+| `/knowledge` | Knowledge cards, batch review, merging, and duplicate checks |
+| `/synthesis` | Synthesis cards, conflict relations, and research-gap board |
+| `/writing` | Draft composition, comparison tables, and external exports |
+| `/knowledge-spaces` | Knowledge spaces, dataset binding, and Dify document management |
+| `/translate` | DeepLX text translation |
+| `/health` | Parsing, sync, knowledge-asset, and index health checks |
+| `/settings` | LLM base URL, models, API key, and reasoning effort |
 
 ## Architecture
 
-AI4Sec has three services:
+| Service | Stack | Default port | Purpose |
+|---|---|---:|---|
+| `frontend` | Next.js 15 / React 19 / Tailwind | `3001` | Web UI, PDF viewer, SSE run status, and API proxy |
+| `backend` | FastAPI / LangGraph / SQLite | `8001` | Parsing, LLM workflows, knowledge assets, retrieval, exports, and health checks |
+| `dify-proxy` | FastAPI | `3002` | Optional service that keeps the Dify Dataset API key server-side |
 
-| Service | Purpose | Default port |
-|---|---|---|
-| `frontend` | Next.js UI for upload, library, daily recommendations, knowledge spaces, knowledge cards, translation, and settings | `3001` |
-| `backend` | FastAPI backend for PDF parsing, LLM workflows, SQLite data, SSE streaming, and knowledge assets | `8001` |
-| `dify-proxy` | Optional proxy that keeps the Dify Dataset API key server-side and exposes dataset/document/retrieval/sync endpoints to the backend | `3002` |
-
-The default deployment starts only `frontend` and `backend`. Dify is optional. Enable `dify-proxy` only when you need cross-paper RAG, Dify sync, or dataset-bound knowledge spaces.
+The default deployment needs only `frontend` and `backend`. Enable `dify-proxy` when you need cross-paper RAG, Dify document sync, or dataset-bound knowledge spaces.
 
 ## Quick Start
 
-### 1. Prepare the environment
-
 Docker 24+ and Docker Compose 2.20+ are required.
-The commands below use `docker compose`; if your system only has the standalone binary, replace `docker compose` with `docker-compose`.
 
 ```bash
 git clone https://github.com/NewWr/ai4sec.git
@@ -50,38 +61,38 @@ cp .env.example .env
 
 Edit `.env` and fill at least:
 
-```bash
+```dotenv
 LLM_BASEURL=https://api.openai.com/v1
-LLM_APIKEY=your OpenAI-compatible API key
-THINKING_MODELNAME=your model name
-MINERU_TOKEN=your MinerU token
+LLM_APIKEY=
+THINKING_MODELNAME=
+MINERU_TOKEN=
 ```
 
-### 2. Start the base deployment
+Clear `AI4SEC_BACKEND_PROXY` if you do not use a local proxy; otherwise set it to your actual proxy URL.
 
 ```bash
 docker compose up -d --build
 ```
 
+Open:
+
 - Frontend: http://localhost:3001
 - Backend: http://localhost:8001
 - API docs: http://localhost:8001/docs
 
-The base deployment supports upload analysis, paper library, daily recommendations, knowledge cards, translation, settings, and health checks. Dify-related features will report that the knowledge base is not configured.
-
-### 3. Stop
+Stop services:
 
 ```bash
 docker compose down
 ```
 
-Uploaded PDFs, SQLite databases, and generated content are stored in `./docker-data/`, which is ignored by Git.
+Runtime data is stored in `./docker-data/`, which is ignored by Git.
 
 ## Configure Dify RAG
 
-`dify-rag/` is a developer-local Dify deployment directory and is not published with this project. Public users should deploy Dify separately, then let AI4Sec access the Dify Dataset API through `dify-proxy`.
+`dify-rag/` is a local development directory and is not published with this project. For public deployments, deploy Dify separately and let AI4Sec access the Dify Dataset API through `dify-proxy`.
 
-### Option A: Use a separate Dify checkout
+Example:
 
 ```bash
 git clone https://github.com/langgenius/dify.git dify-rag
@@ -90,41 +101,19 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Dify is available at http://localhost by default. Create the first admin account, then create or prepare a knowledge-base dataset in the Dify console.
+Configure AI4Sec's `.env`:
 
-### Option B: Use an existing Dify instance
-
-Any Dify instance works as long as AI4Sec's `dify-proxy` can reach its API URL. If both Dify and AI4Sec run with Docker Compose, the recommended setup is to attach `dify-proxy` to Dify's Compose network.
-
-### Required values
-
-You need:
-
-| Variable | Meaning |
-|---|---|
-| `DIFY_BASE_URL` | The Dify API URL as seen from `dify-proxy`. In the same Docker network this is usually `http://nginx`; from the host it is usually `http://host.docker.internal` or your Dify server URL |
-| `DIFY_DATASET_API_KEY` | Dify Dataset / Knowledge API key. Store it only in `.env` |
-| `DIFY_DEFAULT_DATASET_ID` / `DIFY_ANALYSIS_DATASET_ID` | Dataset IDs for source paper text and generated analysis reports. You can also bind individual knowledge spaces to different datasets in the UI |
-
-If you use the separate Dify Compose setup above, find its Docker network:
-
-```bash
-docker network ls | grep dify
-```
-
-Common names are `docker_default` or `dify_default`. Put the values in AI4Sec's `.env`:
-
-```bash
+```dotenv
 DIFY_DOCKER_NETWORK=docker_default
 DIFY_API_BASE=http://dify-proxy:3002
 DIFY_BASE_URL=http://nginx
-DIFY_DATASET_API_KEY=your Dify Dataset API key
-DIFY_DEFAULT_DATASET_ID=your source-paper dataset id
-DIFY_ANALYSIS_DATASET_ID=your analysis-report dataset id
+DIFY_DATASET_API_KEY=
+DIFY_DEFAULT_DATASET_ID=
+DIFY_ANALYSIS_DATASET_ID=
 DIFY_SEARCH_METHOD=keyword_search
 ```
 
-Then start AI4Sec with the Dify profile:
+Start AI4Sec with the Dify profile:
 
 ```bash
 docker compose --profile dify up -d --build
@@ -137,24 +126,26 @@ curl http://localhost:3002/health
 curl http://localhost:8001/api/library/status
 ```
 
-When `enabled: true` is returned by the backend status endpoint, the Knowledge Base page, Knowledge Spaces page, Research Sphere library matching, and paper/analysis sync are ready.
+When the backend status returns `enabled: true`, the Knowledge Base page, knowledge spaces, Research Sphere library matching, paper sync, and analysis sync are ready.
 
 ## Common Configuration
 
 | Variable | Purpose |
 |---|---|
-| `LLM_BASEURL` / `LLM_APIKEY` / `THINKING_MODELNAME` | OpenAI-compatible LLM endpoint, key, and comma-separated model list |
+| `LLM_BASEURL` / `LLM_APIKEY` / `THINKING_MODELNAME` | OpenAI-compatible LLM endpoint, key, and optional comma-separated model list |
 | `MINERU_TOKEN` | Required for PDF parsing |
-| `EASYSCHOLAR_SECRET_KEY` | Journal/conference ranking |
-| `TAVILY_KEY` | Web fallback for publication ranking and research context |
+| `EASYSCHOLAR_SECRET_KEY` / `TAVILY_KEY` | Publication ranking and web fallback search |
 | `UNPAYWALL_EMAIL` / `CORE_API_KEY` / `ELSEVIER_API_KEY` / `WILEY_TDM_TOKEN` | Full-text fetching for Research Sphere |
+| `DIFY_*` | Dify RAG, sync, and knowledge-space dataset binding |
 | `DEEPLX_API_BASE` / `DEEPLX_API_KEY` | Translation page and daily recommendation translation |
-| `DAILY_RECOMMENDATION_*` | Daily recommendation topics, limits, score threshold, and auto-refresh schedule |
+| `DAILY_RECOMMENDATION_*` | Daily topics, limits, score threshold, auto-refresh schedule, and target knowledge spaces |
 | `AUTO_KNOWLEDGE_CARDS_ENABLED` | Generate knowledge cards after analysis |
-| `ADMIN_API_TOKEN` | Protect `/api/admin/*` and runtime settings update endpoints |
+| `RESEARCH_DISCOVERY_LLM_VERIFY_ENABLED` | Verify cross-paper relation candidates with an LLM |
+| `DOCUMENT_PARTITION_ENABLED` / `SUPPLEMENTARY_INDEX_ENABLED` | Large-document partitioning and supplementary-material indexing |
+| `ADMIN_API_TOKEN` | Protect `/api/admin/*` and runtime settings write endpoints |
 | `ENABLE_DOCS=false` | Disable Swagger/OpenAPI in production |
 
-See [`.env.example`](./.env.example) for all variables.
+See [`.env.example`](./.env.example) for the full list.
 
 ## Local Development
 
@@ -164,6 +155,7 @@ Backend:
 cd backend
 uv sync
 uv run uvicorn app.main:app --reload --port 8000
+uv run pytest
 ```
 
 Frontend:
@@ -172,6 +164,7 @@ Frontend:
 cd frontend
 npm install
 npm run dev
+npm run build
 ```
 
 ## Project Layout
@@ -179,21 +172,23 @@ npm run dev
 ```text
 ai4sec/
 ├── backend/          # FastAPI, LangGraph workflows, SQLite, PDF/LLM/Dify/knowledge-asset services
-├── frontend/         # Next.js pages and components
+├── frontend/         # Next.js pages, components, PDF viewer, and API client
 ├── dify-proxy/       # Optional Dify Dataset API proxy
-├── docker-compose.yml
-├── .env.example
+├── docs/             # Release and deployment notes
 ├── scripts/          # Public-release checks
-└── docs/             # Release and deployment notes
+├── docker-compose.yml
+└── .env.example
 ```
 
-## Public Release and Privacy
+## Privacy and Public Release
 
-Do not commit `.env`, `docker-data/`, `backend/data/`, `dify-rag/`, PDFs, databases, or API keys. Run the release check before publishing:
+Do not commit `.env`, `docker-data/`, `.local-dev-data/`, `backend/data/`, `dify-rag/`, PDFs, databases, parser outputs, or API keys. Run the pre-release check:
 
 ```bash
 scripts/check_public_release.sh
 ```
+
+If local Git history ever contained private files, publish from a clean-history snapshot or rewrite history with `git filter-repo`/BFG first.
 
 ## License
 
