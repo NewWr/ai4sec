@@ -1,0 +1,14 @@
+[project]
+name = "ai4sec-dify-sync"
+version = "0.1.0"
+description = "External AI4Sec PaperIR to Dify dataset synchronizer"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+]
+
+[project.scripts]
+ai4sec-dify-sync = "ai4sec_dify_sync.cli:main"
+
+[tool.ruff]
+line-length = 100

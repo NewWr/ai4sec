@@ -1,0 +1,18 @@
+services:
+  ai4sec-dify-sync:
+    build:
+      context: .
+    container_name: ai4sec-dify-sync
+    env_file:
+      - .env
+    volumes:
+      - ../docker-data:/ai4sec-data:ro
+      - ./state:/app/state
+    restart: unless-stopped
+    networks:
+      - dify_default
+
+networks:
+  dify_default:
+    external: true
+    name: docker_default
