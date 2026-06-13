@@ -1,6 +1,10 @@
 .venv/
+.pytest_cache/
+.ruff_cache/
 __pycache__/
 *.pyc
 state/*.db
 state/*.db-*
+state/*.pid
+logs/
 .env

@@ -4,7 +4,11 @@ services:
       context: .
     container_name: ai4sec-dify-sync
     env_file:
-      - .env
+      - ../.env
+    environment:
+      AI4SEC_DATA_DIR: /ai4sec-data
+      AI4SEC_APP_DB: /ai4sec-data/app.db
+      DIFY_SYNC_STATE_DB: /app/state/dify_syncs.db
     volumes:
       - ../docker-data:/ai4sec-data:ro
       - ./state:/app/state
@@ -15,4 +19,4 @@ services:
 networks:
   dify_default:
     external: true
-    name: docker_default
+    name: ${DIFY_DOCKER_NETWORK:-docker_default}

@@ -46,6 +46,7 @@
 | `frontend` | Next.js 15 / React 19 / Tailwind | `3001` | Web UI、PDF 查看、SSE 运行状态和 API 代理 |
 | `backend` | FastAPI / LangGraph / SQLite | `8001` | 论文解析、LLM 工作流、知识资产、检索、导出和健康检查 |
 | `dify-proxy` | FastAPI | `3002` | 可选服务，把 Dify Dataset API Key 留在服务端 |
+| `ai4sec-dify-sync` | Python CLI / SQLite | - | 可选常驻服务，把已解析论文同步到 Dify Dataset |
 
 默认只需要 `frontend` 和 `backend`。启用跨论文 RAG、Dify 文档同步或知识空间 dataset 绑定时，再启动 `dify-proxy`。
 
@@ -71,7 +72,7 @@ MINERU_TOKEN=
 如果不使用本机代理，请清空 `AI4SEC_BACKEND_PROXY`；如果使用本机代理，保持为实际代理地址。
 
 ```bash
-docker compose up -d --build
+./start_ai4sec.sh
 ```
 
 访问：
@@ -83,7 +84,8 @@ docker compose up -d --build
 停止服务：
 
 ```bash
-docker compose down
+docker compose --profile dify down
+cd ai4sec-dify-sync && docker compose down
 ```
 
 运行数据保存在 `./docker-data/`，该目录不会提交到 Git。
@@ -108,15 +110,16 @@ DIFY_DOCKER_NETWORK=docker_default
 DIFY_API_BASE=http://dify-proxy:3002
 DIFY_BASE_URL=http://nginx
 DIFY_DATASET_API_KEY=
+DIFY_DATASET_ID=
 DIFY_DEFAULT_DATASET_ID=
 DIFY_ANALYSIS_DATASET_ID=
 DIFY_SEARCH_METHOD=keyword_search
 ```
 
-启动带 Dify profile 的服务：
+启动完整服务：
 
 ```bash
-docker compose --profile dify up -d --build
+./start_ai4sec.sh
 ```
 
 检查集成状态：
@@ -127,6 +130,8 @@ curl http://localhost:8001/api/library/status
 ```
 
 后端返回 `enabled: true` 后，知识库页面、知识空间、Research Sphere 库内匹配、论文同步和分析同步即可使用。
+
+`ai4sec-dify-sync/` 已内置在仓库中。一键启动脚本会使用根目录 `.env`，构建并启动该同步服务；它读取 `./docker-data/app.db` 和 PaperIR 文件，把已解析论文上传到 `DIFY_DATASET_ID`，同步状态写入 `ai4sec-dify-sync/state/dify_syncs.db`。
 
 ## 常用配置
 
@@ -174,15 +179,17 @@ ai4sec/
 ├── backend/          # FastAPI、LangGraph 工作流、SQLite、PDF/LLM/Dify/知识资产服务
 ├── frontend/         # Next.js 页面、组件、PDF 查看和 API 客户端
 ├── dify-proxy/       # 可选 Dify Dataset API 代理
+├── ai4sec-dify-sync/ # 可选 PaperIR 到 Dify Dataset 的常驻同步服务
 ├── docs/             # 发布与部署说明
 ├── scripts/          # 公开发布检查脚本
+├── start_ai4sec.sh   # 一键启动 Dify、AI4Sec 和同步服务
 ├── docker-compose.yml
 └── .env.example
 ```
 
 ## 隐私与公开发布
 
-不要提交 `.env`、`docker-data/`、`.local-dev-data/`、`backend/data/`、`dify-rag/`、PDF、数据库、解析产物或任何 API Key。本仓库提供发布前检查：
+不要提交 `.env`、`docker-data/`、`.local-dev-data/`、`backend/data/`、`dify-rag/`、`ai4sec-dify-sync/state/*.db`、PDF、数据库、解析产物或任何 API Key。本仓库提供发布前检查：
 
 ```bash
 scripts/check_public_release.sh

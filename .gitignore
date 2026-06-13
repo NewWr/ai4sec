@@ -50,6 +50,7 @@ backend/data/
 # === AI assistant / workspace metadata ===
 .cursor/
 .claude/
+.ai4sec-docker-patch/
 
 # === OS ===
 .DS_Store

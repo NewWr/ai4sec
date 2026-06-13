@@ -46,6 +46,7 @@
 | `frontend` | Next.js 15 / React 19 / Tailwind | `3001` | Web UI, PDF viewer, SSE run status, and API proxy |
 | `backend` | FastAPI / LangGraph / SQLite | `8001` | Parsing, LLM workflows, knowledge assets, retrieval, exports, and health checks |
 | `dify-proxy` | FastAPI | `3002` | Optional service that keeps the Dify Dataset API key server-side |
+| `ai4sec-dify-sync` | Python CLI / SQLite | - | Optional watcher that syncs parsed papers into a Dify Dataset |
 
 The default deployment needs only `frontend` and `backend`. Enable `dify-proxy` when you need cross-paper RAG, Dify document sync, or dataset-bound knowledge spaces.
 
@@ -71,7 +72,7 @@ MINERU_TOKEN=
 Clear `AI4SEC_BACKEND_PROXY` if you do not use a local proxy; otherwise set it to your actual proxy URL.
 
 ```bash
-docker compose up -d --build
+./start_ai4sec.sh
 ```
 
 Open:
@@ -83,7 +84,8 @@ Open:
 Stop services:
 
 ```bash
-docker compose down
+docker compose --profile dify down
+cd ai4sec-dify-sync && docker compose down
 ```
 
 Runtime data is stored in `./docker-data/`, which is ignored by Git.
@@ -108,15 +110,16 @@ DIFY_DOCKER_NETWORK=docker_default
 DIFY_API_BASE=http://dify-proxy:3002
 DIFY_BASE_URL=http://nginx
 DIFY_DATASET_API_KEY=
+DIFY_DATASET_ID=
 DIFY_DEFAULT_DATASET_ID=
 DIFY_ANALYSIS_DATASET_ID=
 DIFY_SEARCH_METHOD=keyword_search
 ```
 
-Start AI4Sec with the Dify profile:
+Start the full stack:
 
 ```bash
-docker compose --profile dify up -d --build
+./start_ai4sec.sh
 ```
 
 Check the integration:
@@ -127,6 +130,8 @@ curl http://localhost:8001/api/library/status
 ```
 
 When the backend status returns `enabled: true`, the Knowledge Base page, knowledge spaces, Research Sphere library matching, paper sync, and analysis sync are ready.
+
+`ai4sec-dify-sync/` is included in this repository. The one-click startup script uses the root `.env`, builds and starts the watcher, reads `./docker-data/app.db` and PaperIR files, uploads parsed papers to `DIFY_DATASET_ID`, and stores sync state in `ai4sec-dify-sync/state/dify_syncs.db`.
 
 ## Common Configuration
 
@@ -174,15 +179,17 @@ ai4sec/
 ├── backend/          # FastAPI, LangGraph workflows, SQLite, PDF/LLM/Dify/knowledge-asset services
 ├── frontend/         # Next.js pages, components, PDF viewer, and API client
 ├── dify-proxy/       # Optional Dify Dataset API proxy
+├── ai4sec-dify-sync/ # Optional PaperIR-to-Dify Dataset sync watcher
 ├── docs/             # Release and deployment notes
 ├── scripts/          # Public-release checks
+├── start_ai4sec.sh   # One-click startup for Dify, AI4Sec, and the sync watcher
 ├── docker-compose.yml
 └── .env.example
 ```
 
 ## Privacy and Public Release
 
-Do not commit `.env`, `docker-data/`, `.local-dev-data/`, `backend/data/`, `dify-rag/`, PDFs, databases, parser outputs, or API keys. Run the pre-release check:
+Do not commit `.env`, `docker-data/`, `.local-dev-data/`, `backend/data/`, `dify-rag/`, `ai4sec-dify-sync/state/*.db`, PDFs, databases, parser outputs, or API keys. Run the pre-release check:
 
 ```bash
 scripts/check_public_release.sh

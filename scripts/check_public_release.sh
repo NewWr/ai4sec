@@ -19,6 +19,8 @@ tracked_private="$(
   git ls-files \
     '.env' '.env.*' '**/.env' '**/.env.*' \
     'docker-data/**' '.local-dev-data/**' 'backend/data/**' 'dify-rag/**' \
+    'ai4sec-dify-sync/.env' 'ai4sec-dify-sync/state/*.db' 'ai4sec-dify-sync/state/*.db-*' \
+    'ai4sec-dify-sync/state/*.pid' 'ai4sec-dify-sync/logs/**' \
     '*.db' '*.sqlite' '*.sqlite3' '*.pdf' '*.zip' '*.pem' '*.key' '*.p12' '*.pfx' '*.crt' '*.cer' \
     ':!:*.env.example' ':!:**/*.env.example' 2>/dev/null || true
 )"
@@ -28,7 +30,7 @@ if [[ -n "$tracked_private" ]]; then
 fi
 
 echo "Checking untracked private files are ignored..."
-for path in .env docker-data/app.db .local-dev-data/app.db backend/data/app.db dify-rag/docker/.env; do
+for path in .env docker-data/app.db .local-dev-data/app.db backend/data/app.db dify-rag/docker/.env ai4sec-dify-sync/.env ai4sec-dify-sync/state/dify_syncs.db ai4sec-dify-sync/logs/sync.log; do
   if [[ -e "$path" ]] && ! git check-ignore -q "$path"; then
     fail "$path exists but is not ignored"
   fi
@@ -63,7 +65,7 @@ echo "Checking Git history for previously committed private artifacts..."
 history_hits="$(
   git log --all --name-only --pretty=format: \
     | sort -u \
-    | rg '(^|/)(\.env($|\.)|docker-data|\.local-dev-data|backend/data|app\.db|rank_cache\.(sqlite3|sqlite|db)|original\.pdf)|\.(pdf|sqlite|sqlite3|db|pem|key|p12|pfx|crt|cer)$|(^|/)paper_search/\.env$|(^|/)papersdownload/\.env$' \
+    | rg '(^|/)(\.env($|\.)|docker-data|\.local-dev-data|backend/data|ai4sec-dify-sync/state|ai4sec-dify-sync/logs|app\.db|rank_cache\.(sqlite3|sqlite|db)|original\.pdf)|\.(pdf|sqlite|sqlite3|db|pem|key|p12|pfx|crt|cer)$|(^|/)paper_search/\.env$|(^|/)papersdownload/\.env$' \
     | rg -v '(^|/)\.env\.(example|template)$' \
     || true
 )"
