@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <img src="example.png" alt="AI4Sec 工作台界面预览" width="900" />
+</p>
+
+<p align="center">
   <a href="./README.en.md">English README</a>
 </p>
 
