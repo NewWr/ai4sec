@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { getLLMSettings, testLLMSettings, updateLLMSettings } from "@/lib/api";
 import type { LLMConnectionTestResponse, LLMSettingsResponse } from "@/lib/types";
+import { PageHeader } from "@/components/PageHeader";
+import { IconCog, IconRefresh } from "@/components/icons";
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -99,34 +101,39 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-5 py-8">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">系统设置</h1>
-          <p className="mt-1 text-sm text-muted-foreground">修改 LLM 接口、模型列表和密钥。</p>
-        </div>
-        <button onClick={load} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted">
-          刷新
-        </button>
-      </div>
+      <PageHeader
+        icon={IconCog}
+        title="系统设置"
+        subtitle="修改 LLM 接口、模型列表和密钥。"
+        actions={
+          <button onClick={load} className="btn btn-outline btn-sm">
+            <IconRefresh className="text-base" />
+            刷新
+          </button>
+        }
+      />
 
-      {error && <p className="mb-4 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
-      {message && <p className="mb-4 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-sm text-primary">{message}</p>}
+      {error && <p className="alert alert-error mb-4">{error}</p>}
+      {message && <p className="alert alert-info mb-4">{message}</p>}
 
       {loading ? (
-        <div className="py-16 text-center text-sm text-muted-foreground">加载中...</div>
+        <div className="surface-card soft-shadow p-5">
+          <div className="skeleton mb-5 h-7 w-2/3" />
+          <div className="grid gap-4">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="skeleton h-12" />
+            ))}
+          </div>
+        </div>
       ) : (
-        <section className="rounded-xl border border-border bg-card p-5 soft-shadow">
-          <div className="mb-5 flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span className="rounded-full border border-border bg-background px-2 py-1">来源：{settings?.source === "runtime" ? "网页配置" : ".env"}</span>
-            <span className="rounded-full border border-border bg-background px-2 py-1">
+        <section className="surface-card soft-shadow p-5">
+          <div className="mb-5 flex flex-wrap gap-2 text-xs">
+            <span className="chip">来源：{settings?.source === "runtime" ? "网页配置" : ".env"}</span>
+            <span className="chip">
               密钥：{settings?.api_key_configured ? `已配置，末尾 ${settings.api_key_suffix}` : "未配置"}
             </span>
-            <span className="rounded-full border border-border bg-background px-2 py-1">
-              默认模型：{settings?.default || "-"}
-            </span>
-            <span className="rounded-full border border-border bg-background px-2 py-1">
-              思考等级：{settings?.reasoning_effort || "medium"}
-            </span>
+            <span className="chip">默认模型：{settings?.default || "-"}</span>
+            <span className="chip">思考等级：{settings?.reasoning_effort || "medium"}</span>
           </div>
 
           <div className="grid gap-4">
@@ -136,7 +143,7 @@ export default function SettingsPage() {
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
                 placeholder="https://example.com/v1"
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="field"
               />
             </label>
 
@@ -146,7 +153,7 @@ export default function SettingsPage() {
                 value={thinkingModel}
                 onChange={(event) => setThinkingModel(event.target.value)}
                 placeholder="gpt-4.1,gpt-4.1-mini"
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="field"
               />
               <span className="text-xs text-muted-foreground">多个模型用英文逗号分隔，第一个作为默认模型。</span>
             </label>
@@ -156,7 +163,7 @@ export default function SettingsPage() {
               <select
                 value={reasoningEffort}
                 onChange={(event) => setReasoningEffort(event.target.value)}
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="field"
               >
                 {(settings?.reasoning_efforts?.length ? settings.reasoning_efforts : ["none", "minimal", "low", "medium", "high", "xhigh"]).map((effort) => (
                   <option key={effort} value={effort}>{effort}</option>
@@ -175,7 +182,7 @@ export default function SettingsPage() {
                 }}
                 placeholder={settings?.api_key_configured ? "留空表示保留现有密钥" : "输入新的 API Key"}
                 type="password"
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="field"
               />
             </label>
 
@@ -198,18 +205,14 @@ export default function SettingsPage() {
                 onChange={(event) => setAdminToken(event.target.value)}
                 type="password"
                 placeholder="仅在 ADMIN_API_TOKEN 已配置时需要"
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                className="field"
               />
             </label>
           </div>
 
           {testResult && (
             <div
-              className={`mt-5 rounded-lg border px-3 py-2 text-sm ${
-                testResult.ok
-                  ? "border-success/25 bg-success/10 text-success"
-                  : "border-destructive/25 bg-destructive/10 text-destructive"
-              }`}
+              className={`mt-5 alert ${testResult.ok ? "alert-success" : "alert-error"}`}
             >
               <div className="font-medium">{testResult.ok ? "连接正常" : "连接失败"}</div>
               <div className="mt-1 text-xs leading-5">
@@ -231,14 +234,14 @@ export default function SettingsPage() {
             <button
               onClick={testConnection}
               disabled={testing || saving}
-              className="rounded-lg border border-border px-4 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+              className="btn btn-outline"
             >
               {testing ? "测试中" : "测试连接"}
             </button>
             <button
               onClick={save}
               disabled={saving || testing}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
+              className="btn btn-primary"
             >
               {saving ? "保存中" : "保存配置"}
             </button>

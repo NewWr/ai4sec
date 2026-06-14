@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { dismissRun, listRecentRuns } from "@/lib/api";
 import { useTranslation } from "@/lib/i18n";
-import { IconArrowRight, IconCheck } from "@/components/icons";
+import { IconArrowRight, IconCheck, IconX } from "@/components/icons";
+import { Spinner } from "@/components/Spinner";
 import type { RecentRunResponse } from "@/lib/types";
 
 interface Props {
@@ -133,7 +134,7 @@ function ActiveRow({
         href={`/paper/${run.paper_id}/run/${run.run_id}`}
         className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2"
       >
-        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner size="sm" className="shrink-0 text-primary" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">
             {run.paper_title || run.paper_id}
@@ -151,7 +152,7 @@ function ActiveRow({
         aria-label={t("recent.dismiss")}
         className="mr-2 ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
       >
-        ✕
+        <IconX className="text-xs" />
       </button>
     </li>
   );

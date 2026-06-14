@@ -67,6 +67,7 @@ history_hits="$(
     | sort -u \
     | rg '(^|/)(\.env($|\.)|docker-data|\.local-dev-data|backend/data|ai4sec-dify-sync/state|ai4sec-dify-sync/logs|app\.db|rank_cache\.(sqlite3|sqlite|db)|original\.pdf)|\.(pdf|sqlite|sqlite3|db|pem|key|p12|pfx|crt|cer)$|(^|/)paper_search/\.env$|(^|/)papersdownload/\.env$' \
     | rg -v '(^|/)\.env\.(example|template)$' \
+    | rg -v '^ai4sec-dify-sync/state/\.gitkeep$' \
     || true
 )"
 if [[ -n "$history_hits" ]]; then

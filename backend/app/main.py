@@ -11,6 +11,7 @@ from slowapi.errors import RateLimitExceeded
 from app.config import get_settings
 from app.db.database import close_db, init_db, open_db, set_db_path
 from app.rate_limit import limiter
+from app.services.construction_scheduler import start_construction_scheduler, stop_construction_scheduler
 from app.services.daily_scheduler import start_daily_scheduler, stop_daily_scheduler
 from app.services.http_clients import close_http_clients, init_http_clients
 
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
         logger.exception("backfill_card_evidence failed (non-fatal)")
     await init_http_clients()
     await start_daily_scheduler()
+    await start_construction_scheduler()
     logger.info(f"Database initialized at {data_dir / 'app.db'}")
     logger.info(
         f"LLM base_url={settings.llm_base_url} "
@@ -68,6 +70,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await stop_construction_scheduler()
         await stop_daily_scheduler()
         await close_http_clients()
         await close_db()

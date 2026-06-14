@@ -366,11 +366,116 @@ CREATE TABLE IF NOT EXISTS research_gaps (
     contribution          TEXT NOT NULL DEFAULT '',
     target_venue          TEXT NOT NULL DEFAULT '',
     history_json          TEXT NOT NULL DEFAULT '[]',
+    llm_model             TEXT NOT NULL DEFAULT '',
+    llm_rationale         TEXT NOT NULL DEFAULT '',
+    novelty_basis         TEXT NOT NULL DEFAULT '',
+    novelty_evidence_json TEXT NOT NULL DEFAULT '{}',
+    construction_batch_id TEXT NOT NULL DEFAULT '',
+    source_fingerprint    TEXT NOT NULL DEFAULT '',
+    scored_by             TEXT NOT NULL DEFAULT 'heuristic',
+    critique_json         TEXT NOT NULL DEFAULT '{}',
+    lineage_parent_id     TEXT NOT NULL DEFAULT '',
     gap_version           INTEGER NOT NULL DEFAULT 1,
     created_at            TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_research_gaps_status ON research_gaps(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS construction_state (
+    state_key TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    last_construction_at TEXT NOT NULL DEFAULT '',
+    last_paper_count INTEGER NOT NULL DEFAULT 0,
+    last_evidence_count INTEGER NOT NULL DEFAULT 0,
+    last_card_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS construction_jobs (
+    job_id TEXT PRIMARY KEY,
+    trigger_source TEXT NOT NULL DEFAULT 'manual',
+    dry_run INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    progress_json TEXT NOT NULL DEFAULT '{}',
+    estimate_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_msg TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_construction_jobs_status ON construction_jobs(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS canonical_entities (
+    entity_id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL DEFAULT '',
+    canonical_name TEXT NOT NULL DEFAULT '',
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    definition TEXT NOT NULL DEFAULT '',
+    centroid_json TEXT NOT NULL DEFAULT '[]',
+    mention_count INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL DEFAULT 'rule',
+    model_version TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_entities_type ON canonical_entities(entity_type, canonical_name);
+
+CREATE TABLE IF NOT EXISTS entity_mentions (
+    mention_id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL REFERENCES canonical_entities(entity_id) ON DELETE CASCADE,
+    card_id TEXT NOT NULL DEFAULT '',
+    paper_id TEXT NOT NULL DEFAULT '',
+    mention_text TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(entity_id, card_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_card ON entity_mentions(card_id);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_paper ON entity_mentions(paper_id);
+
+CREATE TABLE IF NOT EXISTS card_embeddings (
+    card_id TEXT PRIMARY KEY REFERENCES knowledge_cards(card_id) ON DELETE CASCADE,
+    embedding_json TEXT NOT NULL DEFAULT '[]',
+    text_hash TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_card_embeddings_model ON card_embeddings(model_name, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS node_embeddings (
+    node_id TEXT PRIMARY KEY REFERENCES paper_nodes(node_id) ON DELETE CASCADE,
+    paper_id TEXT NOT NULL DEFAULT '',
+    embedding_json TEXT NOT NULL DEFAULT '[]',
+    text_hash TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_node_embeddings_paper ON node_embeddings(paper_id, model_name);
+
+CREATE TABLE IF NOT EXISTS idea_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL DEFAULT '',
+    item_type TEXT NOT NULL DEFAULT 'gap',
+    verdict TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_idea_feedback_item ON idea_feedback(item_type, item_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_idea_feedback_verdict ON idea_feedback(verdict, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_profile (
+    profile_id TEXT PRIMARY KEY,
+    profile_scope TEXT NOT NULL DEFAULT 'global',
+    profile_text TEXT NOT NULL DEFAULT '',
+    topic_weights_json TEXT NOT NULL DEFAULT '{}',
+    source_counts_json TEXT NOT NULL DEFAULT '{}',
+    built_at TEXT NOT NULL DEFAULT (datetime('now')),
+    model_version TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS research_asset_events (
     event_id    TEXT PRIMARY KEY,
@@ -398,6 +503,33 @@ CREATE TABLE IF NOT EXISTS library_qa_events (
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_library_qa_events_created ON library_qa_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS library_qa_records (
+    qa_id                   TEXT PRIMARY KEY,
+    question                TEXT NOT NULL DEFAULT '',
+    normalized_question     TEXT NOT NULL DEFAULT '',
+    qa_signature            TEXT NOT NULL DEFAULT '',
+    answer_markdown         TEXT NOT NULL DEFAULT '',
+    answer_preview          TEXT NOT NULL DEFAULT '',
+    sources_json            TEXT NOT NULL DEFAULT '[]',
+    dataset_ids_json        TEXT NOT NULL DEFAULT '[]',
+    search_method           TEXT NOT NULL DEFAULT '',
+    effective_search_method TEXT NOT NULL DEFAULT '',
+    language                TEXT NOT NULL DEFAULT 'en',
+    llm_model               TEXT NOT NULL DEFAULT '',
+    top_k                   INTEGER NOT NULL DEFAULT 10,
+    graph_only              INTEGER NOT NULL DEFAULT 0,
+    blocks_used             INTEGER NOT NULL DEFAULT 0,
+    answer_chars            INTEGER NOT NULL DEFAULT 0,
+    duration_ms             INTEGER NOT NULL DEFAULT 0,
+    status                  TEXT NOT NULL DEFAULT 'done',
+    error_msg               TEXT NOT NULL DEFAULT '',
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_library_qa_records_signature ON library_qa_records(qa_signature, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_library_qa_records_created ON library_qa_records(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_library_qa_records_question ON library_qa_records(normalized_question, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS paper_annotations (
     annotation_id   TEXT PRIMARY KEY,
@@ -501,8 +633,8 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_card_generations_paper ON knowledge_car
 CREATE INDEX IF NOT EXISTS idx_knowledge_card_generations_run ON knowledge_card_generations(run_id, status);
 
 CREATE TABLE IF NOT EXISTS research_evidence_cards (
-    evidence_id TEXT NOT NULL REFERENCES research_evidence_items(evidence_id),
-    card_id     TEXT NOT NULL REFERENCES knowledge_cards(card_id),
+    evidence_id TEXT NOT NULL REFERENCES research_evidence_items(evidence_id) ON DELETE CASCADE,
+    card_id     TEXT NOT NULL REFERENCES knowledge_cards(card_id) ON DELETE CASCADE,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (evidence_id, card_id)
 );

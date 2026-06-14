@@ -136,6 +136,36 @@ def extract_behavior_terms(*texts: str, limit: int = 80) -> list[str]:
     return [term for term, _count in counter.most_common(limit)]
 
 
+async def build_profile_terms(*, limit: int = 60) -> list[str]:
+    """Weighted terms from the global research profile (module C consumer).
+
+    Reads the semantic research profile built by the research-construction batch
+    (``research_profile.topic_weights_json`` + ``profile_text``) so daily
+    recommendation scoring can re-rank toward the user's accumulated interests
+    and accepted/rejected ideas. Returns an empty list when no profile has been
+    built yet, leaving scoring unchanged.
+    """
+    row = await db.fetch_one(
+        "SELECT profile_text, topic_weights_json FROM research_profile WHERE profile_id = 'global'"
+    )
+    if not row:
+        return []
+    counter: Counter[str] = Counter()
+    try:
+        weights = json.loads(str(row.get("topic_weights_json") or "{}"))
+    except Exception:
+        weights = {}
+    if isinstance(weights, dict):
+        for term, weight in weights.items():
+            normalized = _normalize_term(str(term))
+            if not _term_allowed(normalized):
+                continue
+            counter[normalized] += max(1, int(weight)) if isinstance(weight, (int, float)) else 1
+    for term in extract_behavior_terms(str(row.get("profile_text") or ""), limit=40):
+        counter[term] += 1
+    return [term for term, _count in counter.most_common(limit)]
+
+
 async def build_behavior_terms(*, limit: int = 80) -> list[str]:
     rows = await db.fetch_all(
         """

@@ -19,8 +19,8 @@
 - **Evidence-grounded knowledge assets**: generate claim, method, dataset, metric, result, limitation, question, and writing-snippet cards with page references, source snippets, and relationship metadata.
 - **Local library and knowledge spaces**: manage metadata, collections, reading status, notes, annotations, AI review marks, Dify sync state, and bind different knowledge spaces to different Dify datasets.
 - **Daily arXiv recommendations**: fetch candidates by topic, score, translate, collect feedback, ingest selected papers, promote them to knowledge spaces, and launch follow-up analysis.
-- **Cross-paper retrieval and synthesis**: use the local graph and optional Dify RAG for corpus search, cross-paper Q&A, conflict discovery, research-gap candidates, and synthesis cards.
-- **Writing and export**: compose related-work/method/experiment/limitation snippets from verified cards, build comparison tables, and export Markdown, Obsidian, BibTeX, RIS, and Zotero CSL JSON.
+- **Cross-paper retrieval and synthesis**: use the local graph and optional Dify RAG for corpus search, cross-paper Q&A, reusable and deletable Q&A history, conflict discovery, research-gap candidates, and synthesis cards.
+- **Writing and export**: compose related-work/method/experiment/limitation snippets from verified cards and build comparison tables; exports prioritize copy-to-clipboard and use downloads only when needed for Markdown, Obsidian, BibTeX, RIS, or Zotero CSL JSON.
 - **Operations**: runtime LLM settings, model connectivity tests, DeepLX translation, health checks, cache maintenance, rate limiting, and public-release checks.
 
 ## UI Routes
@@ -30,10 +30,10 @@
 | `/upload` | Upload PDFs and create paper records |
 | `/daily` | Daily recommendations, feedback, ingestion, and promotion |
 | `/papers` | Paper list, analysis entry points, recent runs, and PDF viewing |
-| `/library` | Local library, collections, states, sync, and deletion |
+| `/library` | Local library, collections, states, sync, corpus Q&A, and history management |
 | `/knowledge` | Knowledge cards, batch review, merging, and duplicate checks |
-| `/synthesis` | Synthesis cards, conflict relations, and research-gap board |
-| `/writing` | Draft composition, comparison tables, and external exports |
+| `/synthesis` | Synthesis cards, conflict relations, research-gap board, and batch construction |
+| `/writing` | Draft composition, comparison tables, and copy-first external exports |
 | `/knowledge-spaces` | Knowledge spaces, dataset binding, and Dify document management |
 | `/translate` | DeepLX text translation |
 | `/health` | Parsing, sync, knowledge-asset, and index health checks |

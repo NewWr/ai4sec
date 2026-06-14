@@ -22,11 +22,14 @@ import {
 } from "@/lib/api";
 import { useRunStream } from "@/hooks/useRunStream";
 import { useTranslation } from "@/lib/i18n";
+import { labelFor } from "@/lib/labels";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import PdfViewer from "@/components/PdfViewer";
 import SplitPane from "@/components/SplitPane";
 import RankBadges from "@/components/RankBadges";
 import { IconDownload, IconCheck } from "@/components/icons";
+import Link from "next/link";
+import { Spinner } from "@/components/Spinner";
 import type {
   AnalysisDifySyncStatus,
   AiReviewStatus,
@@ -615,7 +618,7 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
           {markdown && (
             <button
               onClick={handleExportMarkdown}
-              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap btn btn-outline btn-sm"
               title={t("run.export_md")}
             >
               <IconDownload className="text-[15px]" />
@@ -623,12 +626,12 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
             </button>
           )}
           {isComplete && (
-            <a
+            <Link
               href={`/knowledge?run_id=${encodeURIComponent(runId)}&status=draft&created_by=ai`}
-              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap btn btn-outline btn-sm"
             >
               AI 卡片 {aiDraftCardCount}
-            </a>
+            </Link>
           )}
           {isRunning && (
             <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-primary">
@@ -708,7 +711,7 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
             ) : (
               <div className="flex h-full items-start justify-center overflow-auto px-6 py-10">
                 <div className="w-full max-w-sm text-center">
-                  <div className="mx-auto mb-5 h-10 w-10 animate-spin rounded-full border-[3px] border-primary border-t-transparent" />
+                  <Spinner size="lg" className="mb-5 text-primary" />
                   <p className="font-medium text-foreground">
                     {currentStep ? stepLabel(currentStep.step) : t("run.starting")}
                   </p>
@@ -731,7 +734,7 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
                                 <IconCheck />
                               </span>
                             ) : (
-                              <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                              <Spinner size="sm" className="shrink-0 text-primary" />
                             )}
                             <span>{stepLabel(step.step)}</span>
                           </div>
@@ -805,9 +808,9 @@ function DocumentPartitionPanel({ partitions }: { partitions: DocumentPartition[
   if (!partitions.length) return null;
   const partLabel: Record<DocumentPartition["part"], string> = {
     main_body: "正文",
-    references: "References",
-    appendix: "Appendix",
-    supplementary: "Supplementary",
+    references: labelFor("documentPart", "references"),
+    appendix: labelFor("documentPart", "appendix"),
+    supplementary: labelFor("documentPart", "supplementary"),
     unknown_tail: "未知尾部",
   };
   return (
@@ -821,10 +824,10 @@ function DocumentPartitionPanel({ partitions }: { partitions: DocumentPartition[
           <div key={`${partition.part}-${index}`} className="rounded-md border border-border bg-background px-3 py-2">
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="font-medium">{partLabel[partition.part] || partition.part}</span>
-              <span className="text-muted-foreground">p.{partition.page_start}-p.{partition.page_end}</span>
+              <span className="text-muted-foreground">第 {partition.page_start}-{partition.page_end} 页</span>
             </div>
             <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
-              confidence={partition.confidence.toFixed(2)} · {partition.reason || partition.title}
+              置信度 {partition.confidence.toFixed(2)} · {partition.reason || partition.title}
             </p>
           </div>
         ))}
@@ -885,7 +888,7 @@ function ReadingAssetPanel({
           <h2 className="text-sm font-semibold">阅读资产</h2>
           {message && <p className="mt-1 text-xs text-primary">{message}</p>}
         </div>
-        <button onClick={onClose} className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted">
+        <button onClick={onClose} className="btn btn-ghost btn-sm">
           收起
         </button>
       </div>
@@ -898,29 +901,29 @@ function ReadingAssetPanel({
               onChange={(e) => onNoteChange({ ...note, summary_user: e.target.value })}
               placeholder="个人摘要"
               rows={3}
-              className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              className="w-full resize-y field"
             />
             <textarea
               value={note.key_takeaways}
               onChange={(e) => onNoteChange({ ...note, key_takeaways: e.target.value })}
               placeholder="关键收获"
               rows={3}
-              className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              className="w-full resize-y field"
             />
             <textarea
               value={note.open_questions}
               onChange={(e) => onNoteChange({ ...note, open_questions: e.target.value })}
               placeholder="未解决问题"
               rows={3}
-              className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              className="w-full resize-y field"
             />
             <input
               value={note.reading_decision}
               onChange={(e) => onNoteChange({ ...note, reading_decision: e.target.value })}
               placeholder="阅读决策"
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+              className="w-full field"
             />
-            <button onClick={onSaveNote} disabled={saving} className="w-full rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-50">
+            <button onClick={onSaveNote} disabled={saving} className="btn btn-primary w-full">
               {saving ? "保存中" : "保存笔记"}
             </button>
           </section>
@@ -932,10 +935,10 @@ function ReadingAssetPanel({
             <span>{aiDraftCardCount}</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={onGenerateAiCards} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">生成卡片</button>
-            <a href={`/knowledge?run_id=${encodeURIComponent(runId)}&status=draft&created_by=ai`} className="rounded-lg border border-border px-2 py-1.5 text-center text-xs hover:bg-muted">
+            <button onClick={onGenerateAiCards} className="btn btn-outline btn-sm">生成卡片</button>
+            <Link href={`/knowledge?run_id=${encodeURIComponent(runId)}&status=draft&created_by=ai`} className="btn btn-outline btn-sm text-center">
               去审核
-            </a>
+            </Link>
           </div>
         </section>
 
@@ -943,41 +946,41 @@ function ReadingAssetPanel({
           <section className="rounded-lg border border-border bg-background p-3">
             <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">当前摘录草稿</span>
-              <span>{activeDraft.source === "pdf" ? `PDF p.${activeDraft.page}` : "AI 输出"}</span>
+              <span>{activeDraft.source === "pdf" ? `PDF 第 ${activeDraft.page} 页` : "AI 输出"}</span>
               {activeDraft.linked_annotation_id && <span>已保存</span>}
             </div>
             <textarea
               value={activeDraft.quote}
               onChange={(e) => onDraftChange({ quote: e.target.value })}
               rows={5}
-              className="w-full resize-y rounded-lg border border-border bg-card px-2 py-1.5 text-xs leading-5 outline-none focus:border-primary/50"
+              className="w-full resize-y field"
             />
             <textarea
               value={activeDraft.note}
               onChange={(e) => onDraftChange({ note: e.target.value })}
               placeholder="给这段摘录添加备注"
               rows={3}
-              className="mt-2 w-full resize-y rounded-lg border border-border bg-card px-2 py-1.5 text-xs leading-5 outline-none focus:border-primary/50"
+              className="mt-2 w-full resize-y field"
             />
             <select
               value={activeDraft.annotation_type}
               onChange={(e) => onDraftChange({ annotation_type: e.target.value as AnnotationType })}
-              className="mt-2 w-full rounded-lg border border-border bg-card px-2 py-1.5 text-xs"
+              className="mt-2 w-full field"
             >
               {(["highlight", "note", "question", "correction"] as AnnotationType[]).map((item) => (
-                <option key={item} value={item}>{item}</option>
+                <option key={item} value={item}>{labelFor("annotationType", item)}</option>
               ))}
             </select>
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <button onClick={onCreateAnnotation} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">
+              <button onClick={onCreateAnnotation} className="btn btn-outline btn-sm">
                 {activeDraft.linked_annotation_id ? "更新摘录" : "保存摘录"}
               </button>
-              <button onClick={onCreateQuestionAnnotation} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">保存为问题</button>
-              <button onClick={onCreateCard} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">建卡片</button>
-              <button onClick={() => onReviewMark("trusted")} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">可信</button>
-              <button onClick={() => onReviewMark("pending")} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">待核验</button>
-              <button onClick={() => onReviewMark("error")} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">错误</button>
-              <button onClick={() => onReviewMark("valuable")} className="rounded-lg border border-border px-2 py-1.5 text-xs hover:bg-muted">有价值</button>
+              <button onClick={onCreateQuestionAnnotation} className="btn btn-outline btn-sm">保存为问题</button>
+              <button onClick={onCreateCard} className="btn btn-outline btn-sm">建卡片</button>
+              <button onClick={() => onReviewMark("trusted")} className="btn btn-outline btn-sm">可信</button>
+              <button onClick={() => onReviewMark("pending")} className="btn btn-outline btn-sm">待核验</button>
+              <button onClick={() => onReviewMark("error")} className="btn btn-outline btn-sm">错误</button>
+              <button onClick={() => onReviewMark("valuable")} className="btn btn-outline btn-sm">有价值</button>
             </div>
           </section>
         )}
@@ -1005,7 +1008,7 @@ function ReadingAssetPanel({
             {reviewMarks.map((mark) => (
               <div key={mark.mark_id} className="rounded-lg border border-border bg-background p-3">
                 <div className="mb-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>{mark.status}</span>
+                  <span>{labelFor("reviewStatus", mark.status)}</span>
                   <span>{mark.source_ref || "AI"}</span>
                 </div>
                 <p className="line-clamp-3 text-xs leading-5">{mark.quote}</p>
@@ -1040,8 +1043,8 @@ function AnnotationItem({
     <div className="rounded-lg border border-border bg-background p-3">
       <button onClick={() => onJumpPage(annotation.page)} className="block w-full text-left">
         <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-          <span>p.{annotation.page || "-"}</span>
-          <span>{annotation.annotation_type}</span>
+          <span>第 {annotation.page || "-"} 页</span>
+          <span>{labelFor("annotationType", annotation.annotation_type)}</span>
         </div>
         <p className="line-clamp-3 text-xs leading-5">{annotation.quote}</p>
       </button>
@@ -1049,10 +1052,10 @@ function AnnotationItem({
         <select
           value={type}
           onChange={(e) => setType(e.target.value as AnnotationType)}
-          className="rounded-lg border border-border bg-card px-2 py-1.5 text-xs"
+          className="field"
         >
           {(["highlight", "note", "question", "correction"] as AnnotationType[]).map((item) => (
-            <option key={item} value={item}>{item}</option>
+            <option key={item} value={item}>{labelFor("annotationType", item)}</option>
           ))}
         </select>
         <textarea
@@ -1060,12 +1063,12 @@ function AnnotationItem({
           onChange={(e) => setNote(e.target.value)}
           placeholder="备注"
           rows={2}
-          className="resize-y rounded-lg border border-border bg-card px-2 py-1.5 text-xs outline-none focus:border-primary/50"
+          className="resize-y field outline-none focus:border-primary/50"
         />
         <div className="flex gap-2">
-          <button onClick={() => onEdit(annotation)} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">编辑</button>
-          <button onClick={() => onUpdate(annotation, { note, annotation_type: type })} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">保存</button>
-          <button onClick={() => onDelete(annotation)} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">删除</button>
+          <button onClick={() => onEdit(annotation)} className="btn btn-outline btn-sm">编辑</button>
+          <button onClick={() => onUpdate(annotation, { note, annotation_type: type })} className="btn btn-outline btn-sm">保存</button>
+          <button onClick={() => onDelete(annotation)} className="btn btn-outline btn-sm">删除</button>
         </div>
       </div>
     </div>

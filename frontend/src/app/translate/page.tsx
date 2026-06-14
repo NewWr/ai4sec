@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { translateText } from "@/lib/api";
+import { PageHeader } from "@/components/PageHeader";
+import { IconLanguages } from "@/components/icons";
 
 type Lang = {
   code: string;
@@ -130,26 +132,36 @@ export default function TranslatePage() {
   return (
     <div className="min-h-[calc(100vh-3.5rem)] px-4 py-6 sm:px-6">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">在线翻译</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              使用当前工作站配置的 DeepLX 服务翻译文本。
-            </p>
-          </div>
-          <div className="rounded-full border border-border bg-card px-3 py-1.5 text-sm text-muted-foreground">
-            {statusText}
-          </div>
-        </div>
+        <PageHeader
+          icon={IconLanguages}
+          title="在线翻译"
+          subtitle="使用当前工作站配置的 DeepLX 服务翻译文本。"
+          actions={
+            <span className="chip">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  translating
+                    ? "bg-primary pulse-dot"
+                    : status === "failed"
+                      ? "bg-destructive"
+                      : status === "done"
+                        ? "bg-success"
+                        : "bg-muted-foreground"
+                }`}
+              />
+              {statusText}
+            </span>
+          }
+        />
 
-        <section className="rounded-lg border border-border bg-card soft-shadow">
+        <section className="surface-card soft-shadow">
           <div className="grid gap-0 lg:grid-cols-[1fr_auto_1fr]">
             <div className="flex min-h-[620px] flex-col">
               <div className="flex h-14 items-center gap-3 border-b border-border px-4">
                 <select
                   value={sourceLang}
                   onChange={(event) => setSourceLang(event.target.value)}
-                  className="h-9 rounded-md border border-border bg-background px-3 text-sm outline-none"
+                  className="h-9 field"
                   aria-label="源语言"
                 >
                   {SOURCE_LANGS.map((lang) => (
@@ -163,7 +175,7 @@ export default function TranslatePage() {
                 <button
                   type="button"
                   onClick={clear}
-                  className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  className="btn btn-ghost btn-sm"
                 >
                   清空
                 </button>
@@ -182,7 +194,7 @@ export default function TranslatePage() {
                 type="button"
                 onClick={swapLanguages}
                 disabled={sourceLang === "auto"}
-                className="h-9 w-16 rounded-md border border-border bg-background text-sm text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+                className="btn btn-outline btn-sm w-16"
                 title={sourceLang === "auto" ? "自动检测源语言时不能交换" : "交换语言"}
               >
                 交换
@@ -194,7 +206,7 @@ export default function TranslatePage() {
                 <select
                   value={targetLang}
                   onChange={(event) => setTargetLang(event.target.value)}
-                  className="h-9 rounded-md border border-border bg-background px-3 text-sm outline-none"
+                  className="h-9 field"
                   aria-label="目标语言"
                 >
                   {TARGET_LANGS.map((lang) => (
@@ -208,7 +220,7 @@ export default function TranslatePage() {
                   type="button"
                   onClick={runTranslate}
                   disabled={!canTranslate}
-                  className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-55"
+                  className="btn btn-primary btn-sm"
                 >
                   {translating ? "翻译中" : "翻译"}
                 </button>
@@ -216,7 +228,7 @@ export default function TranslatePage() {
                   type="button"
                   onClick={copyTranslated}
                   disabled={!translatedText}
-                  className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+                  className="btn btn-ghost btn-sm"
                 >
                   {copyState || "复制"}
                 </button>

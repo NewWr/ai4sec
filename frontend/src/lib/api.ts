@@ -29,6 +29,8 @@ import type {
   LibrarySearchResponse,
   LibraryAskRequest,
   LibraryAskResponse,
+  LibraryAskHistoryDeleteResponse,
+  LibraryAskHistoryResponse,
   ListPapersOptions,
   PaperLifecycleUpdateRequest,
   PaperBulkLifecycleUpdateRequest,
@@ -68,6 +70,11 @@ import type {
   ExportResponse,
   ReferenceImportRequest,
   ImportResponse,
+  ResearchConstructionFeedbackRequest,
+  ResearchConstructionJob,
+  ResearchConstructionRequest,
+  ResearchConstructionState,
+  CanonicalEntitiesResponse,
   LLMConnectionTestRequest,
   LLMConnectionTestResponse,
   LLMSettingsResponse,
@@ -488,6 +495,50 @@ export async function updateDiscoveryGapStatus(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export async function startResearchConstruction(
+  body: ResearchConstructionRequest = {},
+  adminToken = "",
+): Promise<ResearchConstructionJob> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (adminToken.trim()) headers["X-Admin-Token"] = adminToken.trim();
+  return request("/discovery/construct", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getResearchConstructionJob(jobId: string): Promise<ResearchConstructionJob> {
+  return request(`/discovery/construct/${jobId}`);
+}
+
+export async function getResearchConstructionState(): Promise<ResearchConstructionState> {
+  return request("/discovery/construct-state");
+}
+
+export async function updateResearchIdeaFeedback(
+  gapId: string,
+  body: ResearchConstructionFeedbackRequest,
+): Promise<{ feedback_id: string; item_id: string; verdict: string; reason: string }> {
+  return request(`/discovery/gaps/${gapId}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listCanonicalEntities(opts: {
+  entityType?: string;
+  query?: string;
+  limit?: number;
+} = {}): Promise<CanonicalEntitiesResponse> {
+  const qs = new URLSearchParams();
+  if (opts.entityType) qs.set("entity_type", opts.entityType);
+  if (opts.query) qs.set("query", opts.query);
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  return request(`/entities${qs.toString() ? `?${qs.toString()}` : ""}`);
 }
 
 export async function getPaper(paperId: string, signal?: AbortSignal): Promise<PaperResponse> {
@@ -949,9 +1000,32 @@ export async function searchLibrary(
 export async function askLibrary(
   body: LibraryAskRequest,
 ): Promise<LibraryAskResponse> {
-  return request("/library/ask", {
+  return requestFromBackend("/library/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+export async function listLibraryAskHistory(opts: {
+  limit?: number;
+  offset?: number;
+  query?: string;
+} = {}): Promise<LibraryAskHistoryResponse> {
+  const qs = new URLSearchParams({
+    limit: String(opts.limit ?? 30),
+    offset: String(opts.offset ?? 0),
+  });
+  if (opts.query?.trim()) qs.set("query", opts.query.trim());
+  return requestFromBackend(`/library/ask/history?${qs.toString()}`);
+}
+
+export async function getLibraryAskHistory(qaId: string): Promise<LibraryAskResponse> {
+  return requestFromBackend(`/library/ask/history/${encodeURIComponent(qaId)}`);
+}
+
+export async function deleteLibraryAskHistory(qaId: string): Promise<LibraryAskHistoryDeleteResponse> {
+  return requestFromBackend(`/library/ask/history/${encodeURIComponent(qaId)}`, {
+    method: "DELETE",
   });
 }

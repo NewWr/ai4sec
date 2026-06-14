@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from app.db import database as db
+from app.services import entity_registry, semantic_index
 
 logger = logging.getLogger("scholar.local_graph_retrieval")
 
@@ -396,6 +397,12 @@ async def search_local_graph_records(question: str, *, limit: int = 10) -> list[
     query_terms = _terms(question)
     if not query_terms:
         return []
+    # Widen lexical recall with canonical-entity aliases (module D consumer):
+    # a query for "imagenet" then also matches cards tagged "ImageNet-1k".
+    try:
+        query_terms = await entity_registry.expand_terms_with_aliases(query_terms, max_extra=8)
+    except Exception as exc:
+        logger.debug("alias expansion skipped: %s", exc)
     bounded_limit = max(1, min(limit, 50))
     try:
         batches = [
@@ -421,4 +428,45 @@ async def search_local_graph_records(question: str, *, limit: int = 10) -> list[
     records.sort(key=lambda item: (int(item.get("_source_rank") or 99), -float(item.get("score") or 0.0), str(item.get("document_name") or "")))
     for record in records:
         record.pop("_source_rank", None)
+    if semantic_index.embedding_enabled():
+        try:
+            semantic_hits = await semantic_index.semantic_search_cards(question, limit=bounded_limit * 3)
+            lexical = [
+                (
+                    str(record.get("document_id") or ""),
+                    float(record.get("score") or 0.0),
+                    record,
+                )
+                for record in records
+                if str(record.get("document_id") or "")
+            ]
+            merged = semantic_index.rrf_merge(lexical, semantic_hits, limit=bounded_limit)
+            semantic_ids = {hit.item_id for hit in semantic_hits}
+            record_by_id = {str(record.get("document_id") or ""): record for record in records}
+            for item_id, score, meta in merged:
+                if item_id in record_by_id:
+                    record_by_id[item_id]["score"] = score
+                    if item_id in semantic_ids:
+                        record_by_id[item_id]["source_type"] = "hybrid_knowledge_graph"
+                else:
+                    row = meta
+                    content = (
+                        f"Knowledge card ({row.get('card_type') or 'card'}): {row.get('title') or ''}\n"
+                        f"Claim: {row.get('content') or ''}"
+                    )
+                    record_by_id[item_id] = _source_record(
+                        document_id=item_id,
+                        document_name=str(row.get("title") or item_id),
+                        segment_id=item_id,
+                        content=content,
+                        score=score,
+                        source_type="hybrid_knowledge_graph",
+                        source_rank=1,
+                        paper_id=str(row.get("paper_id") or ""),
+                        page=int(row.get("source_page") or 0),
+                        card_id=item_id,
+                    )
+            records = [record_by_id[item_id] for item_id, _, _ in merged if item_id in record_by_id]
+        except Exception as exc:
+            logger.debug("semantic local graph retrieval skipped: %s", exc)
     return records[:bounded_limit]

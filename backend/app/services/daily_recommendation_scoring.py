@@ -338,6 +338,7 @@ def score_paper(
     topic: dict[str, Any],
     feedback_penalty: float = 0.0,
     behavior_terms: list[str] | None = None,
+    profile_terms: list[str] | None = None,
     default_min_score: float = 0.68,
 ) -> ScoreResult:
     haystack = normalize_text(f"{title} {abstract}")
@@ -398,6 +399,24 @@ def score_paper(
     ]
     matched_behavior = [*matched_behavior_title, *matched_behavior_abstract]
 
+    profile_candidates = []
+    seen_profile_terms: set[str] = set()
+    for term in profile_terms or []:
+        cleaned = normalize_text(str(term))
+        if not cleaned or cleaned in seen_profile_terms:
+            continue
+        seen_profile_terms.add(cleaned)
+        profile_candidates.append(cleaned)
+        if len(profile_candidates) >= 40:
+            break
+    matched_profile_title = [term for term in profile_candidates if contains_term(title_norm, term)]
+    matched_profile_abstract = [
+        term
+        for term in profile_candidates
+        if term not in matched_profile_title and contains_term(haystack, term)
+    ]
+    matched_profile = [*matched_profile_title, *matched_profile_abstract]
+
     category_score = 1.0 if category_ok or not allowed_categories else 0.0
     # `must.any` is a hard gate: satisfying one group is already strong evidence.
     # Additional groups should help ranking, but not be required.
@@ -409,6 +428,10 @@ def score_paper(
         0.10,
         (len(matched_behavior_title) * 0.04) + (len(matched_behavior_abstract) * 0.025),
     )
+    profile_score = min(
+        0.08,
+        (len(matched_profile_title) * 0.03) + (len(matched_profile_abstract) * 0.02),
+    )
 
     score = (
         category_score * 0.25
@@ -418,6 +441,7 @@ def score_paper(
         + 0.05
         + feedback_score
         + behavior_score
+        + profile_score
     )
     score = max(0.0, min(1.0, score))
     min_score = float(topic.get("min_score") or default_min_score)
@@ -430,6 +454,8 @@ def score_paper(
         reason_parts.append("相关词 " + ", ".join(matched_should[:5]))
     if matched_behavior:
         reason_parts.append("行为匹配 " + ", ".join(matched_behavior[:4]))
+    if matched_profile:
+        reason_parts.append("画像匹配 " + ", ".join(matched_profile[:4]))
     if feedback_penalty < 0:
         reason_parts.append("历史反馈降权")
 
@@ -448,6 +474,8 @@ def score_paper(
             "feedback_score": feedback_score,
             "behavior_score": behavior_score,
             "matched_behavior": matched_behavior,
+            "profile_score": profile_score,
+            "matched_profile": matched_profile,
             "min_score": min_score,
         },
         reason="；".join(reason_parts) or "规则匹配",

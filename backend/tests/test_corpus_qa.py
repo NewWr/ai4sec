@@ -186,6 +186,39 @@ class CorpusQaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]["content"], corpus_qa._SYSTEM_PROMPT_ZH)
         self.assertIn("问题:", messages[1]["content"])
 
+    async def test_multi_dataset_retrieval_preserves_dataset_ids(self) -> None:
+        records = [
+            {**_RECORDS[0], "dataset_id": "ds1"},
+            {**_RECORDS[1], "dataset_id": "ds2"},
+        ]
+        search_multi = AsyncMock(return_value=records)
+        chat = AsyncMock(return_value="BadCLIP attacks CLIP [L1] and BadT2I [L2].")
+        with tempfile.TemporaryDirectory() as tmp:
+            await self._init_empty_db(tmp)
+            with patch(
+                "app.services.corpus_qa.get_settings",
+                return_value=SimpleNamespace(dify_enabled=True, dify_search_method="keyword_search"),
+            ), patch(
+                "app.services.dify_client.search_records_multi",
+                new=search_multi,
+            ), patch(
+                "app.services.dify_client.search_records",
+                new=AsyncMock(return_value=[]),
+            ) as search_one, patch("app.services.corpus_qa.get_llm_service") as gls:
+                gls.return_value.chat = chat
+                result = await corpus_qa.answer_corpus_question(
+                    "BadCLIP and BadT2I",
+                    search_method="keyword_search",
+                    language="en",
+                    dataset_ids=["ds1", "ds2"],
+                )
+
+        search_multi.assert_awaited_once()
+        self.assertEqual(search_multi.await_args.kwargs["dataset_ids"], ["ds1", "ds2"])
+        search_one.assert_not_awaited()
+        self.assertEqual(result["search_method"], "keyword_search:multi_dataset")
+        self.assertEqual([source["dataset_id"] for source in result["sources"]], ["ds1", "ds2"])
+
     async def test_blank_passages_are_skipped(self) -> None:
         records = [
             {"document_id": "d1", "document_name": "A.md", "segment_id": "s1", "content": "   ", "score": 0.5},
@@ -326,6 +359,53 @@ class LibraryAskApiTests(unittest.TestCase):
         self.assertEqual(body["sources"][0]["card_id"], card_id)
         self.assertEqual(body["sources"][0]["source_type"], "knowledge_graph")
         search_records.assert_not_called()
+
+    def test_library_ask_reuses_history_and_exposes_records(self) -> None:
+        self._seed_verified_card()
+        chat = AsyncMock(return_value="BadCLIP attacks CLIP [L1].")
+        with patch("app.services.corpus_qa.get_llm_service") as gls:
+            gls.return_value.chat = chat
+            first = self.client.post(
+                "/api/library/ask",
+                json={"question": "BadCLIP CLIP", "language": "en"},
+            )
+            second = self.client.post(
+                "/api/library/ask",
+                json={"question": "  BadCLIP   CLIP  ", "language": "en"},
+            )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        first_body = first.json()
+        second_body = second.json()
+        self.assertFalse(first_body["from_cache"])
+        self.assertTrue(second_body["from_cache"])
+        self.assertEqual(first_body["qa_id"], second_body["qa_id"])
+        chat.assert_awaited_once()
+
+        history = self.client.get("/api/library/ask/history")
+        self.assertEqual(history.status_code, 200, history.text)
+        items = history.json()["data"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["qa_id"], first_body["qa_id"])
+
+        detail = self.client.get(f"/api/library/ask/history/{first_body['qa_id']}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["markdown"], "BadCLIP attacks CLIP [L1].")
+
+        deleted = self.client.delete(f"/api/library/ask/history/{first_body['qa_id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertTrue(deleted.json()["deleted"])
+
+        missing_detail = self.client.get(f"/api/library/ask/history/{first_body['qa_id']}")
+        self.assertEqual(missing_detail.status_code, 404, missing_detail.text)
+
+        history_after_delete = self.client.get("/api/library/ask/history")
+        self.assertEqual(history_after_delete.status_code, 200, history_after_delete.text)
+        self.assertEqual(history_after_delete.json()["data"], [])
+
+        missing_delete = self.client.delete(f"/api/library/ask/history/{first_body['qa_id']}")
+        self.assertEqual(missing_delete.status_code, 404, missing_delete.text)
 
 
 if __name__ == "__main__":

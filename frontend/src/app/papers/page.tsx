@@ -24,8 +24,12 @@ import {
   IconCheck,
   IconSphere,
   IconUpload,
+  IconBookOpen,
+  IconRefresh,
 } from "@/components/icons";
 import { CollectionOverview, DiscoveryLoader, PaperCard, PaperDeleteDialog, ReadingWorkbench } from "./components";
+import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import type {
   DifySyncStatus,
   DiscoveryEdge,
@@ -586,32 +590,28 @@ export default function PapersPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-6xl px-5 py-8">
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">{t("papers.title")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">按收纳结构浏览论文，再查看研究发现地图。</p>
-        </div>
-        <Link
-          href="/upload"
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover"
-        >
-          <IconUpload />
-          {t("papers.upload")}
-        </Link>
-      </div>
+    <PageContainer size="content">
+      <PageHeader
+        icon={IconBookOpen}
+        title={t("papers.title")}
+        subtitle="按收纳结构浏览论文，再查看研究发现地图。"
+        actions={
+          <Link href="/upload" className="btn btn-primary">
+            <IconUpload />
+            {t("papers.upload")}
+          </Link>
+        }
+      />
 
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("papers.search_placeholder")}
-          className="w-full max-w-md rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="field w-full max-w-md"
         />
-        <button
-          onClick={load}
-          className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted"
-        >
+        <button onClick={load} className="btn btn-outline">
+          <IconRefresh className="text-base" />
           {t("papers.refresh")}
         </button>
       </div>
@@ -631,7 +631,7 @@ export default function PapersPage() {
         onBulkLifecycle={handleBulkLifecycle}
       />
 
-      {error && <p className="mb-4 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+      {error && <p className="alert alert-error mb-4">{error}</p>}
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">{t("papers.loading")}</div>
@@ -739,6 +739,6 @@ export default function PapersPage() {
           />
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }

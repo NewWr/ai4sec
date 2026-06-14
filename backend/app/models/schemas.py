@@ -25,7 +25,7 @@ KnowledgeCardType = Literal["claim", "method", "dataset", "metric", "result", "l
 KnowledgeCardStatus = Literal["draft", "verified", "rejected", "merged"]
 CreatedBy = Literal["user", "ai"]
 AiReviewStatus = Literal["trusted", "pending", "error", "valuable"]
-SectionHint = Literal["related_work", "method", "experiment", "limitation"]
+SectionHint = Literal["related_work", "method", "experiment", "limitation", "idea_brief"]
 LocalSearchMode = Literal["papers", "fragments", "cards", "relations", "writing"]
 KnowledgeAssetLevel = Literal["evidence", "synthesis", "action"]
 KnowledgePriority = Literal["high", "medium", "low"]
@@ -46,7 +46,9 @@ class LibraryAskRequest(BaseModel):
     language: str = "en"        # en | zh
     llm_model: str = ""
     dataset_id: str = ""
+    dataset_ids: list[str] = []
     graph_only: bool = False
+    force_refresh: bool = False
 
 
 class TranslatorRequest(BaseModel):
@@ -484,6 +486,31 @@ class DiscoveryGapStatusRequest(BaseModel):
 
 class DiscoveryRelationStatusRequest(BaseModel):
     status: Literal["confirmed", "verified", "needs_more_evidence", "rejected", "unverified"]
+
+
+class ResearchConstructionRequest(BaseModel):
+    force: bool = False
+    dry_run: bool = False
+
+
+class ResearchConstructionFeedbackRequest(BaseModel):
+    verdict: Literal["up", "down", "accepted", "rejected"]
+    reason: str = ""
+
+
+class ResearchConstructionJobResponse(BaseModel):
+    job_id: str
+    trigger_source: str = "manual"
+    dry_run: bool = False
+    status: str = "pending"
+    progress: dict[str, Any] = {}
+    estimate: dict[str, Any] = {}
+    result: dict[str, Any] = {}
+    error_msg: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class ModelListResponse(BaseModel):

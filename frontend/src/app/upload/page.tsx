@@ -25,6 +25,8 @@ import {
   IconUpload,
 } from "@/components/icons";
 import RecentRuns from "@/components/RecentRuns";
+import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
 import type { ComponentType } from "react";
 
 const MODE_KEYS: {
@@ -264,10 +266,12 @@ export default function UploadPage() {
   );
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <header className="mb-6">
-        <h1 className="font-display text-3xl font-semibold tracking-tight">{t("upload.title")}</h1>
-      </header>
+    <PageContainer size="form">
+      <PageHeader
+        icon={IconUpload}
+        title={t("upload.title")}
+        subtitle={t("home.feature.upload.desc")}
+      />
 
       <RecentRuns />
 
@@ -320,7 +324,7 @@ export default function UploadPage() {
         <button
           onClick={handleUploadAndClassify}
           disabled={!file || busy}
-          className="mb-8 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3.5 font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
+          className="btn btn-primary mb-8 w-full"
         >
           {busy && <Spinner />}
           {busy ? "正在解析并推荐结构..." : "上传并推荐收纳结构"}
@@ -328,7 +332,7 @@ export default function UploadPage() {
       )}
 
       {step === "classify" && (
-        <div className="mb-8 rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground">
+        <div className="mb-8 surface-card p-5 text-sm text-muted-foreground">
           <div className="mb-3 flex items-center gap-2 text-foreground">
             <Spinner />
             <span className="font-medium">正在解析论文并生成结构推荐</span>
@@ -376,7 +380,7 @@ export default function UploadPage() {
             <button
               onClick={handleConfirmAndOpenWorkspace}
               disabled={busy}
-              className="flex items-center justify-center gap-2 rounded-xl border border-border py-3.5 font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="btn btn-outline"
             >
               {busy && <Spinner />}
               确认并进入论文工作台
@@ -384,7 +388,7 @@ export default function UploadPage() {
             <button
               onClick={handleConfirmAndRun}
               disabled={busy}
-              className="flex items-center justify-center gap-2 rounded-xl bg-primary py-3.5 font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
+              className="btn btn-primary"
             >
               {busy && <Spinner />}
               {busy ? t("upload.submitting") : t("upload.submit")}
@@ -395,7 +399,7 @@ export default function UploadPage() {
       )}
 
       {step !== "analyze" && error && <ErrorBox message={error} />}
-    </div>
+    </PageContainer>
   );
 }
 
@@ -457,7 +461,7 @@ function CollectionConfirmPanel({
 }) {
   const confidence = Math.round((data.suggestion.confidence || 0) * 100);
   return (
-    <section className="mb-8 rounded-xl border border-border bg-card p-5">
+    <section className="mb-8 surface-card p-5">
       <div className="mb-4">
         <h2 className="text-base font-semibold">确认论文收纳结构</h2>
         <p className="mt-1 break-words text-sm text-muted-foreground">
@@ -503,7 +507,7 @@ function CollectionConfirmPanel({
         <select
           value={selectedCollectionId}
           onChange={(e) => onSelectedCollectionChange(e.target.value)}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          className="w-full field"
         >
           <option value="">选择收纳结构</option>
           {collections.map((item) => (
@@ -518,27 +522,27 @@ function CollectionConfirmPanel({
             value={newNameZh}
             onChange={(e) => onNewNameZhChange(e.target.value)}
             placeholder="中文结构名称"
-            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            className="field"
           />
           <input
             value={newName}
             onChange={(e) => onNewNameChange(e.target.value)}
             placeholder="English name"
-            className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            className="field"
           />
           <textarea
             value={newDescriptionZh}
             onChange={(e) => onNewDescriptionZhChange(e.target.value)}
             placeholder="中文结构说明"
             rows={2}
-            className="resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            className="resize-y field"
           />
           <textarea
             value={newDescription}
             onChange={(e) => onNewDescriptionChange(e.target.value)}
             placeholder="English description"
             rows={2}
-            className="resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            className="resize-y field"
           />
         </div>
       )}
@@ -572,7 +576,7 @@ function AnalysisOptions({
   t: (key: string) => string;
 }) {
   return (
-    <section className="mb-8 rounded-xl border border-border bg-card p-5">
+    <section className="mb-8 surface-card p-5">
       <div className="mb-5">
         <label className="mb-3 block text-sm font-semibold">{t("upload.mode_label")}</label>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -613,7 +617,7 @@ function AnalysisOptions({
             placeholder={t("upload.question_placeholder")}
             rows={3}
             maxLength={2000}
-            className="min-h-[88px] w-full resize-y rounded-lg border border-border bg-background px-4 py-3 text-sm transition-colors placeholder:text-muted-foreground/70 focus:border-primary focus:outline-none"
+            className="min-h-[88px] w-full resize-y field"
           />
         </div>
       )}
@@ -638,7 +642,7 @@ function AnalysisOptions({
             value={llmModel}
             onChange={(e) => setLlmModel(e.target.value)}
             disabled={!modelsLoaded || models.length === 0}
-            className="w-full rounded-lg border border-border bg-background px-4 py-3 text-sm transition-colors focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full field"
           >
             {!modelsLoaded ? (
               <option value="">{t("upload.model_loading")}</option>
@@ -658,7 +662,7 @@ function AnalysisOptions({
 
 function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="mb-5 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+    <div className="alert alert-error mb-5">
       {message}
     </div>
   );

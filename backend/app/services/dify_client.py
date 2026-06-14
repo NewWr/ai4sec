@@ -224,8 +224,8 @@ async def search(
     method = (search_method or get_settings().dify_search_method or "keyword_search").strip()
     if method not in _VALID_SEARCH_METHODS:
         method = "keyword_search"
-    if method in _MODEL_BACKED_SEARCH_METHODS:
-        logger.info("dify: degrading %s to keyword_search to avoid model-backed retrieval failures", method)
+    if method in _MODEL_BACKED_SEARCH_METHODS and not get_settings().embed_model.strip():
+        logger.info("dify: degrading %s to keyword_search because EMBED_MODELNAME is not configured", method)
         method = "keyword_search"
 
     body: dict[str, Any] = {
@@ -247,3 +247,70 @@ async def search_records(query: str, **kwargs: Any) -> list[dict[str, Any]]:
     data = await search(query, **kwargs)
     records = data.get("records")
     return records if isinstance(records, list) else []
+
+
+async def search_records_multi(
+    query: str,
+    *,
+    dataset_ids: list[str],
+    top_k: int = 10,
+    score_threshold: float | None = None,
+    search_method: str | None = None,
+) -> list[dict[str, Any]]:
+    """Search several Dify datasets and return a score-sorted merged list."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for dataset_id in dataset_ids:
+        ds = str(dataset_id or "").strip()
+        if ds and ds not in seen:
+            cleaned.append(ds)
+            seen.add(ds)
+
+    if not cleaned:
+        return await search_records(
+            query,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            search_method=search_method,
+        )
+
+    merged: list[dict[str, Any]] = []
+    first_error: DifyError | None = None
+    per_dataset_top_k = _clamp(top_k, 1, 100)
+    for ds in cleaned:
+        try:
+            records = await search_records(
+                query,
+                top_k=per_dataset_top_k,
+                score_threshold=score_threshold,
+                search_method=search_method,
+                dataset_id=ds,
+            )
+        except DifyError as exc:
+            logger.warning("dify: multi-dataset search skipped dataset %s: %s", ds, exc.message)
+            if first_error is None:
+                first_error = exc
+            continue
+        for record in records:
+            enriched = dict(record)
+            enriched["dataset_id"] = ds
+            metadata = enriched.get("metadata")
+            if isinstance(metadata, dict):
+                metadata = dict(metadata)
+                metadata["dataset_id"] = ds
+                enriched["metadata"] = metadata
+            else:
+                enriched["metadata"] = {"dataset_id": ds}
+            merged.append(enriched)
+
+    if not merged and first_error is not None:
+        raise first_error
+
+    def score_of(record: dict[str, Any]) -> float:
+        try:
+            return float(record.get("score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    merged.sort(key=score_of, reverse=True)
+    return merged[:_clamp(top_k, 1, 100)]

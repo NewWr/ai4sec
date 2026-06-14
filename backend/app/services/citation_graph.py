@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -160,12 +160,6 @@ def _oa_extract_doi(ids: dict[str, Any] | None) -> str:
 def _oa_extract_arxiv(ids: dict[str, Any] | None) -> str:
     if not ids:
         return ""
-    # OpenAlex stores arXiv as "https://arxiv.org/abs/XXXX.XXXXX"
-    arxiv = ids.get("openalex", "") or ""  # not here
-    # Check the ids dict for arxiv
-    for key in ("arxiv", "pmid", "pmcid"):
-        pass
-    # Actually OpenAlex puts arXiv IDs in ids.openalex or we extract from DOI
     return ""
 
 

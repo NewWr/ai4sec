@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Paper PDF downloader integrated directly into the backend.
 
 Supports three OA / TDM strategies (Europe PMC and Sci-Hub intentionally
@@ -13,6 +11,8 @@ All HTTP I/O is async via httpx. PDFs are written atomically via ``*.part``
 rename. Per-attempt timeout and bounded retries with backoff are applied
 uniformly; 429 responses trigger a longer cool-down.
 """
+
+from __future__ import annotations
 
 import asyncio
 import ipaddress

@@ -19,8 +19,8 @@
 - **证据化知识资产**：从分析结果生成 claim、method、dataset、metric、result、limitation、question、writing snippet 等知识卡片，保留页码、片段和来源关系。
 - **本地论文库与知识空间**：管理论文元数据、分组、阅读状态、笔记、批注、AI review marks、Dify 同步状态，并把不同知识空间绑定到不同 Dify dataset。
 - **每日 arXiv 推荐**：按主题抓取候选论文，打分、翻译、反馈、导入、提升到知识空间，并可直接启动后续分析。
-- **跨论文检索与综合**：基于本地图谱和可选 Dify RAG 做语料检索、跨论文问答、冲突关系发现、研究 gap 候选和综合卡片沉淀。
-- **写作与导出**：从已确认卡片生成 related work/method/experiment/limitation 片段，生成论文对比表，并导出 Markdown、Obsidian、BibTeX、RIS、Zotero CSL JSON。
+- **跨论文检索与综合**：基于本地图谱和可选 Dify RAG 做语料检索、跨论文问答、问答历史复用与删除、冲突关系发现、研究 gap 候选和综合卡片沉淀。
+- **写作与导出**：从已确认卡片生成 related work/method/experiment/limitation 片段，生成论文对比表；导出以复制为主，必要时下载 Markdown、Obsidian、BibTeX、RIS、Zotero CSL JSON。
 - **运行维护**：提供 LLM 运行时设置、模型连通性测试、DeepLX 翻译、健康检查、缓存清理、限流和公开发布检查。
 
 ## 页面入口
@@ -30,10 +30,10 @@
 | `/upload` | 上传 PDF 并创建论文记录 |
 | `/daily` | 每日推荐、反馈、导入和提升 |
 | `/papers` | 论文列表、分析入口、最近运行和 PDF 查看 |
-| `/library` | 本地论文库、分组、状态、同步与删除 |
+| `/library` | 本地论文库、分组、状态、同步、跨库问答和历史记录管理 |
 | `/knowledge` | 知识卡片、批量审核、合并和去重 |
-| `/synthesis` | 综合卡、冲突关系和研究 gap 看板 |
-| `/writing` | 草稿合成、对比表和外部导出 |
+| `/synthesis` | 综合卡、冲突关系、研究 gap 看板和批量构建 |
+| `/writing` | 草稿合成、对比表和复制优先的外部导出 |
 | `/knowledge-spaces` | 知识空间、dataset 绑定和 Dify 文档管理 |
 | `/translate` | DeepLX 文本翻译 |
 | `/health` | 解析、同步、知识资产和索引健康检查 |

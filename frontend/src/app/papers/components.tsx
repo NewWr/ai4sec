@@ -7,6 +7,7 @@ import {
   IconCheck,
   IconSphere,
 } from "@/components/icons";
+import { labelFor } from "@/lib/labels";
 import type {
   DifySyncStatus,
   DiscoveryEdge,
@@ -75,10 +76,10 @@ function formatDate(iso: string, locale: string): string {
 }
 
 function syncTone(status: string): string {
-  if (status === "synced" || status === "skipped") return "bg-success/10 text-success border-success/20";
-  if (status === "failed") return "bg-destructive/10 text-destructive border-destructive/25";
-  if (status === "running" || status === "pending") return "bg-primary/10 text-primary border-primary/20";
-  return "bg-muted text-muted-foreground border-border";
+  if (status === "synced" || status === "skipped") return "chip-success";
+  if (status === "failed") return "chip-danger";
+  if (status === "running" || status === "pending") return "chip-primary";
+  return "chip-muted";
 }
 
 function statusTone(status: string): string {
@@ -175,7 +176,7 @@ function displayWorkflowStatus(status: string): string {
     insufficient_corpus: "语料不足",
     unknown: "未知",
   };
-  return labels[status] || status;
+  return labels[status] || labelFor("discoveryRelationStatus", status);
 }
 
 function collectionIdsInScope(collections: PaperCollection[], collectionId: string): Set<string> | null {
@@ -249,7 +250,7 @@ export function CollectionOverview({
   }, [collectionDraft, collections]);
 
   return (
-    <section className="mb-6 rounded-xl border border-border bg-card p-4">
+    <section className="mb-6 surface-card p-4">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold">论文收纳结构</h2>
@@ -268,7 +269,7 @@ export function CollectionOverview({
         <select
           value={newCollectionParentId}
           onChange={(e) => onNewCollectionParentChange(e.target.value)}
-          className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="field"
         >
           <option value="">一级结构</option>
           {newCollectionOptions.map(({ collection, level }) => (
@@ -281,18 +282,18 @@ export function CollectionOverview({
           value={newCollectionName}
           onChange={(e) => onNewCollectionNameChange(e.target.value)}
           placeholder={newCollectionParentId ? "新建子结构名称" : "新建一级结构名称"}
-          className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="field"
         />
         <input
           value={newCollectionDescription}
           onChange={(e) => onNewCollectionDescriptionChange(e.target.value)}
           placeholder="结构说明"
-          className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="field"
         />
         <button
           onClick={onCreateCollection}
           disabled={creatingCollection}
-          className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+          className="btn btn-outline"
         >
           {creatingCollection ? "创建中" : "新建结构"}
         </button>
@@ -303,7 +304,7 @@ export function CollectionOverview({
             value={collectionDraft.parentId}
             onChange={(e) => onCollectionDraftChange({ ...collectionDraft, parentId: e.target.value })}
             disabled={collectionDraft.id === "unclassified"}
-            className="rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:opacity-50"
+            className="field disabled:opacity-50"
           >
             <option value="">一级结构</option>
             {editParentOptions.map(({ collection, level }) => (
@@ -316,24 +317,24 @@ export function CollectionOverview({
             value={collectionDraft.name}
             onChange={(e) => onCollectionDraftChange({ ...collectionDraft, name: e.target.value })}
             placeholder="结构名称"
-            className="rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="field"
           />
           <input
             value={collectionDraft.description}
             onChange={(e) => onCollectionDraftChange({ ...collectionDraft, description: e.target.value })}
             placeholder="结构说明"
-            className="rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="field"
           />
           <button
             onClick={onUpdateCollection}
             disabled={Boolean(updatingCollections[collectionDraft.id])}
-            className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
+            className="btn btn-primary"
           >
             {updatingCollections[collectionDraft.id] ? "保存中" : "保存"}
           </button>
           <button
             onClick={onCancelEditCollection}
-            className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted"
+            className="btn btn-outline"
           >
             取消
           </button>
@@ -403,7 +404,7 @@ export function ReadingWorkbench({
     { label: "未归类", value: counts.unclassified, onClick: () => undefined },
   ];
   return (
-    <section className="mb-5 rounded-xl border border-border bg-card p-4">
+    <section className="mb-5 surface-card p-4">
       <div className="mb-4 grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
         {cards.map((card) => (
           <button
@@ -417,19 +418,19 @@ export function ReadingWorkbench({
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <select value={statusFilter} onChange={(e) => onStatusFilter(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-2 text-sm">
+        <select value={statusFilter} onChange={(e) => onStatusFilter(e.target.value)} className="field">
           <option value="">全部阅读阶段</option>
           {READING_STATUSES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
         </select>
-        <select value={priorityFilter} onChange={(e) => onPriorityFilter(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-2 text-sm">
+        <select value={priorityFilter} onChange={(e) => onPriorityFilter(e.target.value)} className="field">
           <option value="">全部优先级</option>
           {PRIORITIES.map((item) => <option key={item.value} value={item.value}>{item.label}优先级</option>)}
         </select>
-        <select value={decisionFilter} onChange={(e) => onDecisionFilter(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-2 text-sm">
+        <select value={decisionFilter} onChange={(e) => onDecisionFilter(e.target.value)} className="field">
           <option value="">全部读后用途</option>
           {DECISIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
         </select>
-        <select value={syncFilter} onChange={(e) => onSyncFilter(e.target.value)} className="rounded-lg border border-border bg-background px-2 py-2 text-sm">
+        <select value={syncFilter} onChange={(e) => onSyncFilter(e.target.value)} className="field">
           <option value="">全部同步状态</option>
           <option value="not_synced">未同步</option>
           <option value="pending">待同步</option>
@@ -444,7 +445,7 @@ export function ReadingWorkbench({
             onDecisionFilter("");
             onSyncFilter("");
           }}
-          className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted"
+          className="btn btn-outline"
         >
           清除筛选
         </button>
@@ -454,28 +455,28 @@ export function ReadingWorkbench({
           <button
             onClick={() => onBulkLifecycle({ reading_status: "read" })}
             disabled={!selectedCount || bulkUpdating}
-            className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+            className="btn btn-outline"
           >
             设为已读
           </button>
           <button
             onClick={() => onBulkLifecycle({ reading_status: "reading", priority: "high" })}
             disabled={!selectedCount || bulkUpdating}
-            className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+            className="btn btn-outline"
           >
             加入精读
           </button>
           <button
             onClick={() => onBulkLifecycle({ reading_status: "archived" })}
             disabled={!selectedCount || bulkUpdating}
-            className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+            className="btn btn-outline"
           >
             归档
           </button>
           <button
             onClick={() => onBulkLifecycle({ decision: "background" })}
             disabled={!selectedCount || bulkUpdating}
-            className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+            className="btn btn-outline"
           >
             标为背景
           </button>
@@ -618,7 +619,7 @@ export function DiscoveryLoader({
 }) {
   if (!discoveryLoaded || !discovery) {
     return (
-      <section className="rounded-xl border border-border bg-card p-4">
+      <section className="surface-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -630,7 +631,7 @@ export function DiscoveryLoader({
           <button
             onClick={onLoadDiscovery}
             disabled={discoveryLoading}
-            className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+            className="btn btn-outline"
           >
             {discoveryLoading ? "加载中" : "加载研究关系线索"}
           </button>
@@ -728,7 +729,7 @@ function DiscoveryFlow({
 
   return (
     <section className="space-y-4">
-      <div className="rounded-xl border border-border bg-card p-4">
+      <div className="surface-card p-4">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -795,7 +796,7 @@ function ThemeSelector({
 
 function ThemeSummary({ themes, itemById }: { themes: DiscoveryTheme[]; itemById: Map<string, PaperLibraryItem> }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="surface-card p-4">
       <h3 className="mb-3 text-sm font-semibold">主题归纳</h3>
       {themes.length === 0 ? (
         <div className="py-8 text-center text-sm text-muted-foreground">暂无主题。</div>
@@ -810,7 +811,7 @@ function ThemeSummary({ themes, itemById }: { themes: DiscoveryTheme[]; itemById
               {theme.keywords.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {theme.keywords.map((keyword) => (
-                    <span key={keyword} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    <span key={keyword} className="chip chip-muted">
                       {keyword}
                     </span>
                   ))}
@@ -878,7 +879,7 @@ function RelationList({
   onStatusChange: (relationId: string, status: DiscoveryRelationStatus) => void;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="surface-card p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
         <IconSphere className="h-4 w-4 text-primary" />
         规则关系线索
@@ -900,14 +901,14 @@ function RelationList({
                   <div className="flex items-center gap-2 text-xs text-muted-foreground md:flex-col">
                     <div className="h-px w-10 bg-border md:h-6 md:w-px" />
                     <span>{Math.round(edge.weight * 100)}%</span>
-                    <span className="rounded-full bg-muted px-2 py-0.5">{edge.relation}</span>
+                    <span className="rounded-full bg-muted px-2 py-0.5">{labelFor("discoveryRelation", edge.relation)}</span>
                     <div className="h-px w-10 bg-border md:h-6 md:w-px" />
                   </div>
                   <PaperNode node={target} />
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {[...edge.positive_checks, ...edge.evidence].slice(0, 8).map((word) => (
-                    <span key={word} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    <span key={word} className="chip chip-muted">
                       {word}
                     </span>
                   ))}
@@ -951,7 +952,7 @@ function RelationList({
 }
 
 function PaperNode({ node }: { node?: DiscoveryNode }) {
-  if (!node) return <div className="text-sm text-muted-foreground">Unknown paper</div>;
+  if (!node) return <div className="text-sm text-muted-foreground">未知论文</div>;
   return (
     <a href={`#paper-${node.paper_id}`} className="group min-w-0 rounded-lg border border-border bg-card px-3 py-2 hover:border-primary/40">
       <div className="flex min-w-0 items-start gap-2">
@@ -977,7 +978,7 @@ function ReadingPathList({
   t: (key: string) => string;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="surface-card p-4">
       <div className="mb-3 text-sm font-semibold">{t("papers.discovery.paths")}</div>
       {!paths.length ? (
         <div className="py-8 text-center text-sm text-muted-foreground">暂无阅读路径。</div>
@@ -1083,7 +1084,7 @@ export function PaperCard({
   const collectionOptions = collectionOptionRows(collections);
 
   return (
-    <article id={`paper-${item.paper_id}`} className="scroll-mt-24 rounded-xl border border-border bg-card p-4">
+    <article id={`paper-${item.paper_id}`} className="scroll-mt-24 surface-card p-4">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-start gap-2">
@@ -1095,7 +1096,7 @@ export function PaperCard({
               aria-label="选择论文"
             />
             <h2 className="min-w-0 flex-1 break-words text-base font-semibold">{title}</h2>
-            <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${syncTone(sync.status)}`}>
+            <span className={`chip ${syncTone(sync.status)}`}>
               {t(`sync.${sync.status}`)}
             </span>
           </div>
@@ -1107,7 +1108,7 @@ export function PaperCard({
             {item.doi && <span>{item.doi}</span>}
             {item.sci_rank && <span>SCI {item.sci_rank}</span>}
             {item.ccf_rank && <span>CCF {item.ccf_rank}</span>}
-            {item.parse_status && <span>{t("papers.parse")}: {item.parse_status}</span>}
+            {item.parse_status && <span>{t("papers.parse")}: {labelFor("paperParseStatus", item.parse_status)}</span>}
             {item.citation_key && <span>@{item.citation_key}</span>}
           </div>
           {(item.display?.summary_zh || item.display?.summary_en) && (
@@ -1120,7 +1121,7 @@ export function PaperCard({
               label={t("papers.latest_run")}
               value={
                 run
-                  ? `${t(`upload.mode.${run.mode}.label`) || run.mode} · ${t(`run.status.${run.status}`) || run.status}`
+                  ? `${t(`upload.mode.${run.mode}.label`) || run.mode} · ${labelFor("runStatus", run.status)}`
                   : t("papers.no_runs")
               }
               href={run ? `/paper/${item.paper_id}/run/${run.run_id}` : ""}
@@ -1142,7 +1143,7 @@ export function PaperCard({
               <select
                 value={item.reading_status}
                 onChange={(e) => onLifecycleUpdate({ reading_status: e.target.value as ReadingStatus })}
-                className="rounded-lg border border-border bg-background px-2 py-2 text-sm"
+                className="field"
               >
                 {READING_STATUSES.map((status) => (
                   <option key={status.value} value={status.value}>{status.label}</option>
@@ -1151,7 +1152,7 @@ export function PaperCard({
               <select
                 value={item.priority}
                 onChange={(e) => onLifecycleUpdate({ priority: e.target.value as PaperPriority })}
-                className="rounded-lg border border-border bg-background px-2 py-2 text-sm"
+                className="field"
               >
                 {PRIORITIES.map((priority) => (
                   <option key={priority.value} value={priority.value}>{priority.label}优先级</option>
@@ -1160,7 +1161,7 @@ export function PaperCard({
               <select
                 value={item.decision}
                 onChange={(e) => onLifecycleUpdate({ decision: e.target.value as ReadingDecision })}
-                className="rounded-lg border border-border bg-background px-2 py-2 text-sm"
+                className="field"
               >
                 <option value="">未决策</option>
                 {DECISIONS.map((decision) => (
@@ -1188,7 +1189,7 @@ export function PaperCard({
               value={item.primary_collection_id || ""}
               onChange={(e) => onMovePaper(e.target.value)}
               disabled={moving}
-              className="w-full rounded-lg border border-border bg-background px-2 py-2 text-sm"
+              className="w-full field"
             >
               <option value="">选择收纳结构</option>
               {collectionOptions.map(({ collection, level }) => (
@@ -1206,18 +1207,18 @@ export function PaperCard({
                 <select
                   value={selectedRun?.run_id || ""}
                   onChange={(e) => onSelectedRunChange(e.target.value)}
-                  className="min-w-0 w-full rounded-lg border border-border bg-background px-2 py-2 text-sm"
+                  className="min-w-0 w-full field"
                 >
                   {runs.map((item) => (
                     <option key={item.run_id} value={item.run_id}>
-                      {(t(`upload.mode.${item.mode}.label`) || item.mode)} · {t(`run.status.${item.status}`) || item.status} · {formatDate(item.started_at, locale)}
+                      {(t(`upload.mode.${item.mode}.label`) || item.mode)} · {labelFor("runStatus", item.status)} · {formatDate(item.started_at, locale)}
                     </option>
                   ))}
                 </select>
                 {selectedRun && (
                   <Link
                     href={`/paper/${item.paper_id}/run/${selectedRun.run_id}`}
-                    className="inline-flex w-full min-w-0 items-center justify-center rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted"
+                    className="inline-flex w-full min-w-0 items-center justify-center btn btn-outline"
                   >
                     查看已有
                   </Link>
@@ -1228,7 +1229,7 @@ export function PaperCard({
               <select
                 value={mode}
                 onChange={(e) => onModeChange(e.target.value as ReadingMode)}
-                className="rounded-lg border border-border bg-background px-2 py-2 text-sm"
+                className="field"
               >
                 {MODES.map((m) => (
                   <option key={m} value={m}>{t(`upload.mode.${m}.label`)}</option>
@@ -1237,7 +1238,7 @@ export function PaperCard({
               <select
                 value={language}
                 onChange={(e) => onLanguageChange(e.target.value as OutputLanguage)}
-                className="rounded-lg border border-border bg-background px-2 py-2 text-sm"
+                className="field"
               >
                 <option value="en">English</option>
                 <option value="zh">中文</option>
@@ -1250,14 +1251,14 @@ export function PaperCard({
                 placeholder={t("upload.question_placeholder")}
                 maxLength={2000}
                 rows={2}
-                className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+                className="w-full resize-y field"
               />
             )}
             <div className="flex gap-2">
               <button
                 onClick={onCreateRun}
                 disabled={running}
-                className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
+                className="inline-flex flex-1 items-center justify-center gap-2 btn btn-primary"
               >
                 {running ? t("papers.starting") : runs.length > 0 ? "重新分析" : t("papers.start_run")}
                 {!running && <IconArrowRight />}
@@ -1265,7 +1266,7 @@ export function PaperCard({
               <button
                 onClick={onRetrySync}
                 disabled={syncing || !canRetrySync}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-1.5 btn btn-outline disabled:cursor-not-allowed disabled:opacity-50"
                 title={sync.error_msg || t("papers.retry_sync")}
               >
                 {syncing ? t("papers.syncing") : sync.status === "synced" ? <IconCheck /> : t("papers.retry_sync")}
@@ -1275,7 +1276,7 @@ export function PaperCard({
               <button
                 onClick={onEditPaper}
                 disabled={updating || deleting}
-                className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+                className="btn btn-outline"
               >
                 编辑信息
               </button>
@@ -1316,8 +1317,8 @@ export function PaperDeleteDialog({
 }) {
   const title = displayTitle(item);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-xl">
+    <div className="modal-overlay">
+      <div className="modal-panel max-w-lg p-5">
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
             <span className="text-lg font-semibold">!</span>
@@ -1342,14 +1343,14 @@ export function PaperDeleteDialog({
           <button
             onClick={onCancel}
             disabled={deleting}
-            className="rounded-lg border border-border px-4 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+            className="btn btn-outline"
           >
             取消
           </button>
           <button
             onClick={onConfirm}
             disabled={deleting}
-            className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+            className="btn btn-danger"
           >
             {deleting ? "删除中" : "确认删除"}
           </button>
@@ -1380,45 +1381,45 @@ function PaperEditPanel({
           value={draft.titleZh}
           onChange={(e) => update({ titleZh: e.target.value })}
           placeholder="中文标题"
-          className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="min-w-0 field"
         />
         <input
           value={draft.title}
           onChange={(e) => update({ title: e.target.value })}
           placeholder="原始标题"
-          className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="min-w-0 field"
         />
         <input
           value={draft.venue}
           onChange={(e) => update({ venue: e.target.value })}
           placeholder="期刊或会议"
-          className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="min-w-0 field"
         />
         <input
           value={draft.doi}
           onChange={(e) => update({ doi: e.target.value })}
           placeholder="DOI"
-          className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="min-w-0 field"
         />
         <input
           value={draft.year}
           onChange={(e) => update({ year: e.target.value })}
           placeholder="年份"
           inputMode="numeric"
-          className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className="min-w-0 field"
         />
         <div className="grid grid-cols-2 gap-2">
           <input
             value={draft.sciRank}
             onChange={(e) => update({ sciRank: e.target.value })}
             placeholder="SCI 分区"
-            className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="min-w-0 field"
           />
           <input
             value={draft.ccfRank}
             onChange={(e) => update({ ccfRank: e.target.value })}
             placeholder="CCF 等级"
-            className="min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
+            className="min-w-0 field"
           />
         </div>
         <textarea
@@ -1426,20 +1427,20 @@ function PaperEditPanel({
           onChange={(e) => update({ summaryZh: e.target.value })}
           placeholder="中文简介"
           rows={3}
-          className="min-w-0 resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 md:col-span-2"
+          className="min-w-0 resize-y field md:col-span-2"
         />
       </div>
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         <button
           onClick={onCancel}
-          className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted"
+          className="btn btn-outline"
         >
           取消
         </button>
         <button
           onClick={onSave}
           disabled={updating}
-          className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-hover disabled:opacity-50"
+          className="btn btn-primary"
         >
           {updating ? "保存中" : "保存信息"}
         </button>

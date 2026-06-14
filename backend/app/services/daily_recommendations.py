@@ -17,8 +17,10 @@ from app.services.arxiv_client import ArxivPaper, search_arxiv, within_lookback
 from app.services.daily_recommendation_scoring import DEFAULT_TOPICS, score_paper
 from app.services.http_clients import get_default_http_client
 from app.services.knowledge_spaces import DAILY_SOURCE_SPACE_ID, add_item_to_space
+from app.services.llm_runtime_config import get_llm_runtime_config
+from app.services.llm_service import get_llm_service
 from app.services.paper_collections import assign_paper_to_collection, ensure_default_collection
-from app.services.recommendation_behavior import build_behavior_terms, match_research_gaps_for_paper
+from app.services.recommendation_behavior import build_behavior_terms, build_profile_terms, match_research_gaps_for_paper
 from app.services.translation_cache import translate_text
 
 logger = logging.getLogger("scholar.daily")
@@ -171,6 +173,101 @@ async def _translate_candidate(paper: ArxivPaper) -> tuple[str, str, str, str]:
     return title_res.translated_text, abstract_res.translated_text, title_res.status, abstract_res.status
 
 
+async def _llm_profile_rerank(fetched_date: str, *, limit: int) -> int:
+    """Optional LLM re-rank of the day's top candidates against the research profile.
+
+    Lights up the dormant ``DAILY_RECOMMENDATION_LLM_REVIEW_*`` flags: when
+    enabled and a global research profile exists, the top-N kept candidates are
+    re-scored by one batched LLM call for fit to the profile, nudging their score
+    and recording the verdict in ``llm_review_json``. Disabled by default, so it
+    costs no tokens unless the operator turns it on; any failure leaves the rule
+    scores untouched.
+    """
+    runtime = get_llm_runtime_config()
+    if not (runtime.base_url and runtime.api_key and runtime.default_thinking_model):
+        return 0
+    profile_row = await db.fetch_one(
+        "SELECT profile_text FROM research_profile WHERE profile_id = 'global'"
+    )
+    profile_text = str((profile_row or {}).get("profile_text") or "").strip()
+    if not profile_text:
+        return 0
+    rows = await db.fetch_all(
+        """
+        SELECT item_id, title_en, abstract_en, score
+          FROM daily_recommendation_items
+         WHERE fetched_date = ? AND status = 'candidate'
+         ORDER BY score DESC
+         LIMIT ?
+        """,
+        (fetched_date, max(1, int(limit))),
+    )
+    if not rows:
+        return 0
+    old_scores = {str(row.get("item_id") or ""): float(row.get("score") or 0.0) for row in rows}
+    payload = {
+        "profile": profile_text[:2000],
+        "candidates": [
+            {
+                "item_id": str(row.get("item_id") or ""),
+                "title": str(row.get("title_en") or ""),
+                "abstract": str(row.get("abstract_en") or "")[:600],
+            }
+            for row in rows
+        ],
+    }
+    try:
+        raw = await get_llm_service().chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Re-rank daily paper candidates by fit to the researcher's profile. "
+                        "Return strict JSON: {\"items\":[{\"item_id\":\"...\",\"fit\":0.0,\"reason\":\"...\"}]} "
+                        "with fit in [0,1]. Judge only from the profile and the provided title/abstract."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+        )
+        data = json.loads(raw)
+    except Exception as exc:
+        logger.warning("Daily LLM profile rerank failed: %s", exc)
+        return 0
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return 0
+    updated = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("item_id") or "")
+        if not item_id or item_id not in old_scores:
+            continue
+        try:
+            fit = max(0.0, min(1.0, float(item.get("fit") or 0.0)))
+        except (TypeError, ValueError):
+            continue
+        new_score = round(min(1.0, old_scores[item_id] * 0.8 + fit * 0.2), 4)
+        await db.execute(
+            """
+            UPDATE daily_recommendation_items
+               SET llm_review_status = 'done',
+                   llm_review_json = ?,
+                   score = ?
+             WHERE item_id = ?
+            """,
+            (
+                json.dumps({"fit": fit, "reason": str(item.get("reason") or "")[:500]}, ensure_ascii=False),
+                new_score,
+                item_id,
+            ),
+        )
+        updated += 1
+    return updated
+
+
 async def refresh_daily_recommendations(
     *,
     fetched_date: str = "",
@@ -196,6 +293,11 @@ async def refresh_daily_recommendations(
     except Exception as exc:
         logger.warning("Daily refresh behavior profile unavailable: %s", exc)
         behavior_terms = []
+    try:
+        profile_terms = await build_profile_terms()
+    except Exception as exc:
+        logger.warning("Daily refresh research profile unavailable: %s", exc)
+        profile_terms = []
 
     async def translate_candidate_limited(paper: ArxivPaper) -> tuple[str, str, str, str]:
         async with translate_semaphore:
@@ -252,6 +354,7 @@ async def refresh_daily_recommendations(
                 topic=config,
                 feedback_penalty=penalty,
                 behavior_terms=behavior_terms,
+                profile_terms=profile_terms,
                 default_min_score=float(settings.daily_recommendation_min_score),
             )
             if not score.keep:
@@ -330,6 +433,15 @@ async def refresh_daily_recommendations(
             )
             upserted += 1
             kept += 1
+
+    if settings.daily_recommendation_llm_review_enabled:
+        try:
+            await _llm_profile_rerank(
+                fetched_date,
+                limit=int(settings.daily_recommendation_llm_review_limit or 20),
+            )
+        except Exception as exc:
+            logger.warning("Daily LLM profile rerank skipped: %s", exc)
 
     if errors and fetched == 0 and upserted == 0:
         message = "refresh_failed"

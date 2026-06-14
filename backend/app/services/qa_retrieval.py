@@ -9,6 +9,7 @@ from typing import Any
 from app.db import database as db
 from app.models.paper_ir import Block, PaperIR
 from app.services.paper_partitioner import DocumentPartition, block_doc_part, partition_paper_ir
+from app.services import semantic_index
 
 logger = logging.getLogger("scholar.qa_retrieval")
 
@@ -577,5 +578,11 @@ async def retrieve_qa_context_for_paper(
 
     nodes = _assign_doc_parts(nodes, partition_paper_ir(paper_ir))
     boosted_ids = await _search_fts_node_ids(paper_id, question)
+    if semantic_index.embedding_enabled():
+        try:
+            semantic_hits = await semantic_index.semantic_search_nodes(question, paper_id=paper_id, limit=40)
+            boosted_ids.update(hit.item_id for hit in semantic_hits)
+        except Exception as exc:
+            logger.debug("qa retrieval: semantic boost skipped for %s: %s", paper_id, exc)
     chosen = _select_context_nodes(nodes, question, boosted_node_ids=boosted_ids)
     return _format_context(chosen, max_chars), len(chosen)

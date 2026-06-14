@@ -37,6 +37,7 @@ from app.models.schemas import (
     WritingSnippetUpdateRequest,
 )
 from app.rate_limit import limiter
+from app.services import entity_registry
 from app.services import knowledge_assets as assets
 from app.services import knowledge_card_generator
 
@@ -47,6 +48,29 @@ def _bad_request(exc: ValueError) -> HTTPException:
     msg = str(exc)
     status = 404 if "not found" in msg.lower() else 400
     return HTTPException(status_code=status, detail=msg)
+
+
+@router.get("/entities")
+@limiter.limit("60/minute")
+async def list_canonical_entities(
+    request: Request,
+    entity_type: str = "",
+    query: str = "",
+    limit: int = 50,
+):
+    """Canonical method/dataset/metric entities with the papers that mention them.
+
+    Read side of the entity registry (module D): the synthesis / comparison
+    surfaces render one row per canonical entity instead of repeating near
+    duplicate cards. Returns an empty list until the construction batch builds
+    the registry.
+    """
+    entities = await entity_registry.list_entities(
+        entity_type=entity_type.strip(),
+        query=query.strip(),
+        limit=limit,
+    )
+    return {"entities": entities, "total": len(entities)}
 
 
 @router.patch("/papers/{paper_id}/lifecycle", response_model=PaperResponse)

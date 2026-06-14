@@ -168,6 +168,28 @@ class AppSettings(BaseSettings):
     research_discovery_llm_verify_limit: int = Field(default=24, alias="RESEARCH_DISCOVERY_LLM_VERIFY_LIMIT")
     research_discovery_llm_verify_model: str = Field(default="", alias="RESEARCH_DISCOVERY_LLM_VERIFY_MODEL")
 
+    # --- Research construction batch pass ---
+    research_construction_enabled: bool = Field(default=False, alias="RESEARCH_CONSTRUCTION_ENABLED")
+    research_construction_trigger_mode: str = Field(default="manual", alias="RESEARCH_CONSTRUCTION_TRIGGER_MODE")
+    research_construction_schedule_hour: int = Field(default=6, alias="RESEARCH_CONSTRUCTION_SCHEDULE_HOUR")
+    research_construction_schedule_minute: int = Field(default=0, alias="RESEARCH_CONSTRUCTION_SCHEDULE_MINUTE")
+    research_construction_schedule_weekday: str = Field(default="1", alias="RESEARCH_CONSTRUCTION_SCHEDULE_WEEKDAY")
+    research_construction_schedule_timezone: str = Field(
+        default="Asia/Shanghai",
+        alias="RESEARCH_CONSTRUCTION_SCHEDULE_TIMEZONE",
+    )
+    research_construction_new_paper_threshold: int = Field(default=10, alias="RESEARCH_CONSTRUCTION_NEW_PAPER_THRESHOLD")
+    research_construction_max_ideas_per_run: int = Field(default=12, alias="RESEARCH_CONSTRUCTION_MAX_IDEAS_PER_RUN")
+    research_construction_novelty_check_limit: int = Field(default=6, alias="RESEARCH_CONSTRUCTION_NOVELTY_CHECK_LIMIT")
+    idea_critique_limit: int = Field(default=6, alias="IDEA_CRITIQUE_LIMIT")
+    research_construction_synthesis_limit: int = Field(default=8, alias="RESEARCH_CONSTRUCTION_SYNTHESIS_LIMIT")
+    research_profile_rebuild_every_days: int = Field(default=7, alias="RESEARCH_PROFILE_REBUILD_EVERY_DAYS")
+    research_profile_feedback_threshold: int = Field(default=15, alias="RESEARCH_PROFILE_FEEDBACK_THRESHOLD")
+    max_entities_per_run: int = Field(default=20, alias="MAX_ENTITIES_PER_RUN")
+    entity_sim_threshold: float = Field(default=0.86, alias="ENTITY_SIM_THRESHOLD")
+    embedding_backfill_batch: int = Field(default=128, alias="EMBEDDING_BACKFILL_BATCH")
+    recall_rerank_limit: int = Field(default=10, alias="RECALL_RERANK_LIMIT")
+
     # --- Document partitioning for large papers and Supplementary PDFs ---
     document_partition_enabled: bool = Field(default=True, alias="DOCUMENT_PARTITION_ENABLED")
     supplementary_index_enabled: bool = Field(default=True, alias="SUPPLEMENTARY_INDEX_ENABLED")

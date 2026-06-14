@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { fixKnowledgeHealthIssue, getKnowledgeHealth } from "@/lib/api";
 import type { KnowledgeHealth, KnowledgeHealthIssue } from "@/lib/types";
+import { PageHeader } from "@/components/PageHeader";
+import { IconWrench, IconRefresh } from "@/components/icons";
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -57,21 +59,27 @@ export default function HealthPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">知识库维护</h1>
-          <p className="mt-1 text-sm text-muted-foreground">查看解析、同步、元数据、笔记和卡片质量问题。</p>
-        </div>
-        <button onClick={load} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted">
-          刷新
-        </button>
-      </div>
+      <PageHeader
+        icon={IconWrench}
+        title="知识库维护"
+        subtitle="查看解析、同步、元数据、笔记和卡片质量问题。"
+        actions={
+          <button onClick={load} className="btn btn-outline btn-sm">
+            <IconRefresh className="text-base" />
+            刷新
+          </button>
+        }
+      />
 
-      {error && <p className="mb-4 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
-      {message && <p className="mb-4 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-sm text-primary">{message}</p>}
+      {error && <p className="alert alert-error mb-4">{error}</p>}
+      {message && <p className="alert alert-info mb-4">{message}</p>}
 
       {loading || !health ? (
-        <div className="py-16 text-center text-sm text-muted-foreground">加载中...</div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="skeleton h-[88px]" />
+          ))}
+        </div>
       ) : (
         <>
           <section className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -179,8 +187,8 @@ function actionLabel(issueType: string): string {
 
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <div className="text-2xl font-semibold">{value}</div>
+    <div className="surface-card lift soft-shadow p-4">
+      <div className="text-2xl font-semibold tracking-tight">{value}</div>
       <div className="mt-1 text-sm text-muted-foreground">{label}</div>
     </div>
   );

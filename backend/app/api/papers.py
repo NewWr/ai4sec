@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.config import get_settings
@@ -37,7 +37,11 @@ from app.models.schemas import (
     PaperSyncStatusResponse,
     PaperUploadResponse,
     PaperUpdateRequest,
+    ResearchConstructionFeedbackRequest,
+    ResearchConstructionJobResponse,
+    ResearchConstructionRequest,
 )
+from app.api.admin import require_admin_token
 from app.services.dify_sync import sync_paper_ir_to_dify
 from app.services.knowledge_spaces import MAIN_SOURCE_SPACE_ID, add_item_to_space
 from app.services.paper_collections import (
@@ -55,6 +59,7 @@ from app.services.paper_collections import (
 )
 from app.services.research_discovery import build_research_discovery
 from app.services import research_discovery
+from app.services import research_construction
 
 router = APIRouter(tags=["papers"])
 
@@ -650,6 +655,59 @@ async def update_discovery_relation_status(request: Request, relation_id: str, r
         (req.status, relation_id),
     )
     return await build_research_discovery(200)
+
+
+@router.post(
+    "/discovery/construct",
+    response_model=ResearchConstructionJobResponse,
+    dependencies=[Depends(require_admin_token)],
+)
+@limiter.limit("10/minute")
+async def start_research_construction(
+    request: Request,
+    req: ResearchConstructionRequest | None = None,
+    dry_run: int = 0,
+):
+    body = req or ResearchConstructionRequest()
+    job = await research_construction.start_construction_job(
+        dry_run=bool(dry_run) or body.dry_run,
+        force=body.force,
+        trigger_source="manual",
+    )
+    return ResearchConstructionJobResponse(**job)
+
+
+@router.get("/discovery/construct/{job_id}", response_model=ResearchConstructionJobResponse)
+@limiter.limit("30/minute")
+async def get_research_construction_job(request: Request, job_id: str):
+    try:
+        return ResearchConstructionJobResponse(**await research_construction.get_job(job_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/discovery/construct-state")
+@limiter.limit("30/minute")
+async def get_research_construction_state(request: Request):
+    estimate, state = await asyncio.gather(
+        research_construction.estimate_plan(),
+        research_construction.get_state(),
+    )
+    return {"estimate": estimate, "state": state}
+
+
+@router.post("/discovery/gaps/{gap_id}/feedback")
+@limiter.limit("30/minute")
+async def record_research_idea_feedback(
+    request: Request,
+    gap_id: str,
+    req: ResearchConstructionFeedbackRequest,
+):
+    try:
+        return await research_construction.record_idea_feedback(gap_id, req.verdict, req.reason)
+    except ValueError as exc:
+        status = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 @router.patch("/papers/{paper_id}", response_model=PaperResponse)

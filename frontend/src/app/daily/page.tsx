@@ -18,6 +18,9 @@ import type {
   DailyRecommendationTopic,
   ReadingMode,
 } from "@/lib/types";
+import { PageHeader } from "@/components/PageHeader";
+import { PageContainer } from "@/components/PageContainer";
+import { IconSparkles, IconRefresh } from "@/components/icons";
 
 const PAGE_SIZE = 20;
 
@@ -39,10 +42,10 @@ function statusLabel(status: string): string {
 }
 
 function statusTone(status: string): string {
-  if (status === "ingested" || status === "interested") return "border-success/25 bg-success/10 text-success";
-  if (status === "irrelevant" || status === "ingest_failed") return "border-destructive/25 bg-destructive/10 text-destructive";
-  if (status === "dismissed") return "border-border bg-muted text-muted-foreground";
-  return "border-primary/25 bg-primary/10 text-primary";
+  if (status === "ingested" || status === "interested") return "chip-success";
+  if (status === "irrelevant" || status === "ingest_failed") return "chip-danger";
+  if (status === "dismissed") return "chip-muted";
+  return "chip-primary";
 }
 
 function topicName(topic?: DailyRecommendationTopic): string {
@@ -272,42 +275,44 @@ export default function DailyRecommendationsPage() {
   const pageEnd = Math.min(total, page * PAGE_SIZE + (data?.items.length || 0));
 
   return (
-    <div className="mx-auto max-w-7xl px-5 py-7">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">每日论文推荐</h1>
-          <p className="mt-1 text-sm text-muted-foreground">默认按推荐日期倒序显示全部论文；系统每天 06:00 自动更新，候选论文需手动选择解析方式后入库。</p>
-        </div>
-        <button
-          onClick={startRefresh}
-          disabled={Boolean(refreshJob?.job_id && !["done", "failed"].includes(refreshJob.status))}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
-        >
-          {refreshJob?.job_id && !["done", "failed"].includes(refreshJob.status) ? "刷新中" : "立即刷新"}
-        </button>
-      </div>
+    <PageContainer size="wide">
+      <PageHeader
+        icon={IconSparkles}
+        title="每日论文推荐"
+        subtitle="默认按推荐日期倒序显示全部论文；系统每天 06:00 自动更新，候选论文需手动选择解析方式后入库。"
+        actions={
+          <button
+            onClick={startRefresh}
+            disabled={Boolean(refreshJob?.job_id && !["done", "failed"].includes(refreshJob.status))}
+            className="btn btn-primary"
+          >
+            <IconRefresh className="text-base" />
+            {refreshJob?.job_id && !["done", "failed"].includes(refreshJob.status) ? "刷新中" : "立即刷新"}
+          </button>
+        }
+      />
 
-      {error && <p className="mb-4 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
-      {message && <p className="mb-4 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-sm text-primary">{message}</p>}
+      {error && <p className="alert alert-error mb-4">{error}</p>}
+      {message && <p className="alert alert-info mb-4">{message}</p>}
       {refreshJob?.job_id && (
-        <p className="mb-4 rounded-lg border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+        <p className="alert mb-4 text-muted-foreground">
           刷新任务 {refreshJob.job_id}：{refreshJob.status}，已抓取 {refreshJob.fetched}，新增或更新 {refreshJob.inserted_or_updated}。
         </p>
       )}
 
-      <section className="mb-4 grid gap-3 rounded-xl border border-border bg-card p-3 soft-shadow md:grid-cols-[220px_1fr_160px_160px]">
+      <section className="mb-4 grid gap-3 surface-card p-3 soft-shadow md:grid-cols-[220px_1fr_160px_160px]">
         <div className="flex min-w-0 gap-2">
           <input
             type="date"
             value={date}
             onChange={(event) => setDate(event.target.value)}
-            className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            className="field min-w-0 flex-1"
             title="按推荐日期筛选；留空显示全部日期"
           />
           {date && (
             <button
               onClick={() => setDate("")}
-              className="shrink-0 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+              className="btn btn-outline btn-sm shrink-0"
             >
               全部
             </button>
@@ -317,12 +322,12 @@ export default function DailyRecommendationsPage() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="搜索当前页标题、摘要、arXiv ID、推荐理由"
-          className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          className="field"
         />
         <select
           value={topicId}
           onChange={(event) => setTopicId(event.target.value)}
-          className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          className="field"
         >
           <option value="">全部主题</option>
           {(data?.topics || []).map((topic) => (
@@ -332,7 +337,7 @@ export default function DailyRecommendationsPage() {
         <select
           value={status}
           onChange={(event) => setStatus(event.target.value)}
-          className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          className="field"
         >
           <option value="">全部状态 ({counts.all})</option>
           <option value="candidate">候选 ({counts.candidate})</option>
@@ -369,7 +374,7 @@ export default function DailyRecommendationsPage() {
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">加载中...</div>
       ) : filtered.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">
+        <div className="surface-card p-8 text-center text-sm text-muted-foreground">
           当前筛选条件下没有候选论文。
         </div>
       ) : (
@@ -380,24 +385,24 @@ export default function DailyRecommendationsPage() {
             const behaviorTags = scoreTags(item);
             const gapMatches = item.score_detail.matched_gaps || [];
             return (
-              <article key={item.item_id} id={`daily-${item.item_id}`} className="rounded-xl border border-border bg-card p-4 soft-shadow">
+              <article key={item.item_id} id={`daily-${item.item_id}`} className="surface-card p-4 soft-shadow">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className={`rounded-full border px-2 py-0.5 ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
-                    <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-muted-foreground">{topicName(topicById.get(item.topic_id)) || item.topic_id}</span>
-                    <span className="rounded-full border border-border bg-background px-2 py-0.5 text-muted-foreground">{item.primary_category}</span>
-                    <span className="rounded-full border border-border bg-background px-2 py-0.5 text-muted-foreground">score {item.score.toFixed(2)}</span>
+                    <span className={`chip ${statusTone(item.status)}`}>{statusLabel(item.status)}</span>
+                    <span className="chip">{topicName(topicById.get(item.topic_id)) || item.topic_id}</span>
+                    <span className="chip">{item.primary_category}</span>
+                    <span className="chip">score {item.score.toFixed(2)}</span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <a href={item.arxiv_url} target="_blank" rel="noreferrer" className="rounded-lg border border-border px-2 py-1 hover:bg-muted">arXiv</a>
-                    <a href={item.pdf_url} target="_blank" rel="noreferrer" className="rounded-lg border border-border px-2 py-1 hover:bg-muted">PDF</a>
+                    <a href={item.arxiv_url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">arXiv</a>
+                    <a href={item.pdf_url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">PDF</a>
                     {item.linked_paper_id && (
-                      <Link href={`/papers#paper-${item.linked_paper_id}`} className="rounded-lg border border-success/30 px-2 py-1 text-success hover:bg-success/10">
+                      <Link href={`/papers#paper-${item.linked_paper_id}`} className="btn btn-outline-success btn-sm">
                         本地论文
                       </Link>
                     )}
                     {item.linked_run_id && (
-                      <Link href={`/paper/${item.linked_paper_id}/run/${item.linked_run_id}`} className="rounded-lg border border-primary/30 px-2 py-1 text-primary hover:bg-primary/10">
+                      <Link href={`/paper/${item.linked_paper_id}/run/${item.linked_run_id}`} className="btn btn-outline btn-sm">
                         解读结果
                       </Link>
                     )}
@@ -432,7 +437,7 @@ export default function DailyRecommendationsPage() {
                 {(behaviorTags.length > 0 || gapMatches.length > 0) && (
                   <div className="mt-3 flex flex-wrap gap-1.5 text-xs">
                     {behaviorTags.map((term) => (
-                      <span key={`behavior-${item.item_id}-${term}`} className="rounded-full border border-primary/20 bg-primary/5 px-2 py-0.5 text-primary">
+                      <span key={`behavior-${item.item_id}-${term}`} className="chip chip-primary">
                         行为 {term}
                       </span>
                     ))}
@@ -440,7 +445,7 @@ export default function DailyRecommendationsPage() {
                       <Link
                         key={`gap-${item.item_id}-${gap.gap_id}`}
                         href={`/synthesis#gap-${gap.gap_id}`}
-                        className="rounded-full border border-amber-300/50 bg-amber-100/70 px-2 py-0.5 text-amber-700 hover:bg-amber-100 dark:border-amber-700/50 dark:bg-amber-950/40 dark:text-amber-300"
+                        className="chip chip-warning"
                         title={(gap.matched_terms || []).join(", ")}
                       >
                         命中想法 {gap.title || gap.gap_id}
@@ -450,35 +455,35 @@ export default function DailyRecommendationsPage() {
                 )}
 
                 {item.error_msg && (
-                  <p className="mt-3 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">{item.error_msg}</p>
+                  <p className="mt-3 alert alert-error">{item.error_msg}</p>
                 )}
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => feedback(item, "interested")}
                     disabled={busy}
-                    className="rounded-lg border border-success/30 px-3 py-1.5 text-sm text-success hover:bg-success/10 disabled:opacity-50"
+                    className="btn btn-outline-success btn-sm"
                   >
                     感兴趣
                   </button>
                   <button
                     onClick={() => feedback(item, "irrelevant")}
                     disabled={busy}
-                    className="rounded-lg border border-destructive/30 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    className="btn btn-outline-danger btn-sm"
                   >
                     不相关
                   </button>
                   <button
                     onClick={() => feedback(item, "dismissed")}
                     disabled={busy}
-                    className="rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
+                    className="btn btn-ghost btn-sm"
                   >
                     忽略
                   </button>
                   <button
                     onClick={() => setIngestDraft({ item, parseMode: "lens", sourceOnly: false })}
                     disabled={busy || item.status === "ingested" || item.status === "ingesting"}
-                    className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                    className="btn btn-primary btn-sm"
                   >
                     {acting[item.item_id] === "ingest" ? "处理中" : "选择解析方式"}
                   </button>
@@ -486,7 +491,7 @@ export default function DailyRecommendationsPage() {
                     <button
                       onClick={() => promote(item)}
                       disabled={busy}
-                      className="rounded-lg border border-primary/30 px-3 py-1.5 text-sm text-primary hover:bg-primary/10 disabled:opacity-50"
+                      className="btn btn-outline-primary btn-sm"
                     >
                       {acting[item.item_id] === "promote" ? "转正中" : "转正到主库"}
                     </button>
@@ -498,8 +503,8 @@ export default function DailyRecommendationsPage() {
         </section>
       )}
       {ingestDraft && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 py-6">
-          <div className="w-full max-w-xl rounded-xl border border-border bg-card p-5 shadow-xl">
+        <div className="modal-overlay">
+          <div className="modal-panel max-w-xl p-5">
             <div className="mb-4">
               <h2 className="text-base font-semibold">选择解析方式并入库</h2>
               <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{ingestDraft.item.title_zh || ingestDraft.item.title_en}</p>
@@ -544,14 +549,14 @@ export default function DailyRecommendationsPage() {
               <button
                 onClick={() => setIngestDraft(null)}
                 disabled={Boolean(acting[ingestDraft.item.item_id])}
-                className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                className="btn btn-outline"
               >
                 取消
               </button>
               <button
                 onClick={ingest}
                 disabled={Boolean(acting[ingestDraft.item.item_id])}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
+                className="btn btn-primary"
               >
                 {acting[ingestDraft.item.item_id] ? "处理中" : "确认入库"}
               </button>
@@ -559,6 +564,6 @@ export default function DailyRecommendationsPage() {
           </div>
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

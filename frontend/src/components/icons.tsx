@@ -191,3 +191,75 @@ export function IconCog(props: IconProps) {
     </Svg>
   );
 }
+
+/** Writing — pencil. */
+export function IconPencil(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+    </Svg>
+  );
+}
+
+/** Translate — languages. */
+export function IconLanguages(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 5h7M9 3v2c0 4-2.5 7-6 8" />
+      <path d="M5 9c0 2.5 2.8 4.7 6 5.5" />
+      <path d="m13 21 4-9 4 9M14.5 17h5" />
+    </Svg>
+  );
+}
+
+/** Library — search. */
+export function IconSearch(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
+    </Svg>
+  );
+}
+
+/** Knowledge spaces — layers. */
+export function IconLayers(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+      <path d="m3 13 9 5 9-5M3 18l9 5 9-5" />
+    </Svg>
+  );
+}
+
+/** Refresh — circular arrows. */
+export function IconRefresh(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+      <path d="M21 4v5h-5" />
+    </Svg>
+  );
+}
+
+/** Close — X. */
+export function IconX(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </Svg>
+  );
+}
+
+/** Delete — trash can. */
+export function IconTrash(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M4 7h16" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M6 7l1 14h10l1-14" />
+      <path d="M9 7V4h6v3" />
+    </Svg>
+  );
+}

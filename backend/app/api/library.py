@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import get_settings
@@ -147,7 +148,9 @@ async def library_ask(request: Request, req: LibraryAskRequest):
             language=language,
             llm_model=llm_model,
             dataset_id=req.dataset_id or None,
+            dataset_ids=req.dataset_ids,
             graph_only=req.graph_only,
+            force_refresh=req.force_refresh,
         )
     except DifyError as exc:
         raise HTTPException(
@@ -158,3 +161,36 @@ async def library_ask(request: Request, req: LibraryAskRequest):
                 "upstream_detail": exc.detail,
             },
         )
+    except httpx.TimeoutException as exc:
+        logger.exception("library_ask: upstream timeout")
+        raise HTTPException(status_code=504, detail="Question answering timed out") from exc
+    except RuntimeError as exc:
+        logger.exception("library_ask: answer generation failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("library_ask: unexpected failure")
+        raise HTTPException(status_code=500, detail=f"Question answering failed: {exc}") from exc
+
+
+@router.get("/library/ask/history")
+@limiter.limit("60/minute")
+async def library_ask_history(request: Request, limit: int = 30, offset: int = 0, query: str = ""):
+    return await corpus_qa.list_answer_records(limit=limit, offset=offset, query=query)
+
+
+@router.get("/library/ask/history/{qa_id}")
+@limiter.limit("60/minute")
+async def library_ask_history_detail(request: Request, qa_id: str):
+    record = await corpus_qa.get_answer_record(qa_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="QA record not found")
+    return record
+
+
+@router.delete("/library/ask/history/{qa_id}")
+@limiter.limit("60/minute")
+async def delete_library_ask_history(request: Request, qa_id: str):
+    deleted = await corpus_qa.delete_answer_record(qa_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="QA record not found")
+    return {"qa_id": qa_id, "deleted": True}

@@ -239,6 +239,8 @@ export interface DailyRecommendationGapMatch {
 export interface DailyRecommendationScoreDetail {
   matched_behavior?: string[];
   behavior_score?: number;
+  matched_profile?: string[];
+  profile_score?: number;
   matched_gaps?: DailyRecommendationGapMatch[];
   gap_hit_count?: number;
   [key: string]: unknown;
@@ -647,6 +649,15 @@ export interface DiscoveryGap {
   rejection_reason: string;
   minimum_experiment: string;
   hit_by_paper_ids: string[];
+  llm_model?: string;
+  llm_rationale?: string;
+  novelty_basis?: string;
+  novelty_evidence_json?: string;
+  construction_batch_id?: string;
+  source_fingerprint?: string;
+  scored_by?: string;
+  critique_json?: string;
+  lineage_parent_id?: string;
   gap_version: number;
 }
 
@@ -773,8 +784,65 @@ export type KnowledgeCardType = "claim" | "method" | "dataset" | "metric" | "res
 export type KnowledgeCardStatus = "draft" | "verified" | "rejected" | "merged";
 export type KnowledgeAssetLevel = "evidence" | "synthesis" | "action";
 export type AiReviewStatus = "trusted" | "pending" | "error" | "valuable";
-export type SectionHint = "related_work" | "method" | "experiment" | "limitation";
+export type SectionHint = "related_work" | "method" | "experiment" | "limitation" | "idea_brief";
 export type LocalSearchMode = "papers" | "fragments" | "cards" | "relations" | "writing";
+
+export interface ResearchConstructionRequest {
+  force?: boolean;
+  dry_run?: boolean;
+}
+
+export interface ResearchConstructionJob {
+  job_id: string;
+  trigger_source: string;
+  dry_run: boolean;
+  status: string;
+  progress: Record<string, unknown>;
+  estimate: Record<string, unknown>;
+  result: Record<string, unknown>;
+  error_msg: string;
+  started_at: string;
+  finished_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchConstructionState {
+  estimate: Record<string, unknown>;
+  state: Record<string, unknown>;
+}
+
+export interface ResearchConstructionFeedbackRequest {
+  verdict: "up" | "down" | "accepted" | "rejected";
+  reason?: string;
+}
+
+export interface CanonicalEntityMention {
+  card_id: string;
+  paper_id: string;
+  paper_title: string;
+  mention_text: string;
+  confidence: number;
+}
+
+export interface CanonicalEntity {
+  entity_id: string;
+  entity_type: string;
+  canonical_name: string;
+  aliases: string[];
+  definition: string;
+  mention_count: number;
+  paper_count: number;
+  paper_ids: string[];
+  mentions: CanonicalEntityMention[];
+  created_by: string;
+  updated_at: string;
+}
+
+export interface CanonicalEntitiesResponse {
+  entities: CanonicalEntity[];
+  total: number;
+}
 
 export interface ListPapersOptions {
   limit?: number;
@@ -1302,17 +1370,22 @@ export interface LibrarySource {
   segment_id: string;
   score: number | null;
   source_type?: "dify" | "knowledge_graph" | string;
+  dataset_id?: string;
   card_id?: string;
   paper_id?: string;
   page?: number;
 }
 
 export interface LibraryAskResponse {
+  qa_id?: string;
   markdown: string;
   sources: LibrarySource[];
   blocks_used: number;
   search_method: string;
   question: string;
+  from_cache?: boolean;
+  created_at?: string;
+  duration_ms?: number;
 }
 
 export interface LibrarySearchRequest {
@@ -1330,5 +1403,36 @@ export interface LibraryAskRequest {
   language?: string;
   llm_model?: string;
   dataset_id?: string;
+  dataset_ids?: string[];
   graph_only?: boolean;
+  force_refresh?: boolean;
+}
+
+export interface LibraryAskHistoryItem {
+  qa_id: string;
+  question: string;
+  answer_preview: string;
+  dataset_ids: string[];
+  search_method: string;
+  effective_search_method: string;
+  language: string;
+  top_k: number;
+  graph_only: boolean;
+  blocks_used: number;
+  answer_chars: number;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface LibraryAskHistoryResponse {
+  data: LibraryAskHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface LibraryAskHistoryDeleteResponse {
+  qa_id: string;
+  deleted: boolean;
 }

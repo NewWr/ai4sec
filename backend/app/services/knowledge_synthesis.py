@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from app.services import entity_registry
 from app.services import knowledge_assets as assets
 
 SYNTHESIS_CARD_TYPES = {"method", "dataset", "metric", "result", "limitation"}
@@ -24,6 +25,20 @@ def _cluster_key(card: dict[str, Any]) -> str:
     if tags:
         return f"{card_type}:{','.join(sorted(tags)[:3])}"
     return f"{card_type}:{_norm(str(card.get('title') or card.get('content') or ''))[:80]}"
+
+
+def _group_key(card: dict[str, Any], entity_by_card: dict[str, str]) -> str:
+    """Prefer the canonical entity as the cluster key (module D consumer).
+
+    When a card is registered to a canonical method/dataset/metric, all of its
+    near-duplicate mentions across papers share one entity_id, so the synthesis
+    aligns on the entity instead of literal normalized keys / tags. Falls back
+    to the lexical cluster key when the registry has no mention for the card.
+    """
+    entity_id = entity_by_card.get(str(card.get("card_id") or ""))
+    if entity_id:
+        return f"{str(card.get('card_type') or '')}:entity:{entity_id}"
+    return _cluster_key(card)
 
 
 def _summary_title(card_type: str, cards: list[dict[str, Any]]) -> str:
@@ -51,6 +66,10 @@ def _summary_content(cards: list[dict[str, Any]]) -> str:
 
 async def rebuild_synthesis_cards(*, limit: int = 500) -> dict[str, int]:
     cards = await assets.list_cards(status="verified", asset_level="action", limit=limit)
+    try:
+        entity_by_card = await entity_registry.card_entity_map()
+    except Exception:
+        entity_by_card = {}
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for card in cards:
         card_type = str(card.get("card_type") or "")
@@ -58,7 +77,7 @@ async def rebuild_synthesis_cards(*, limit: int = 500) -> dict[str, int]:
             continue
         if not card.get("evidence_ids"):
             continue
-        groups[_cluster_key(card)].append(card)
+        groups[_group_key(card, entity_by_card)].append(card)
 
     created = 0
     skipped = 0

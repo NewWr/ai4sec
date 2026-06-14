@@ -436,7 +436,7 @@ export default function PdfViewer({
           loading={<div className="flex h-48 items-center justify-center text-muted-foreground">{t("pdf.loading")}</div>}
           error={
             <div className="mx-auto max-w-md rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-              Failed to load PDF file{error ? `: ${error}` : "."}
+              PDF 加载失败{error ? `：${error}` : "。"}
             </div>
           }
         >

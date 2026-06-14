@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { ExportPanel, type ExportItem } from "@/components/ExportPanel";
+import { PageHeader } from "@/components/PageHeader";
+import { IconCards } from "@/components/icons";
 import {
   batchUpdateKnowledgeCardStatus,
   createKnowledgeCard,
@@ -18,6 +21,7 @@ import {
   updateKnowledgeCard,
   updateWritingSnippet,
 } from "@/lib/api";
+import { assetLevelLabel, cardStatusLabel, cardTypeLabel, createdByLabel, sectionHintLabel } from "@/lib/labels";
 import type {
   KnowledgeCard,
   KnowledgeCardStatus,
@@ -84,7 +88,7 @@ export default function KnowledgePage() {
   const [referenceText, setReferenceText] = useState("");
   const [referenceFormat, setReferenceFormat] = useState<"bibtex" | "ris">("bibtex");
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({});
-  const [exportText, setExportText] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -243,7 +247,7 @@ export default function KnowledgePage() {
         max_cards: 12,
       });
       const critiqueSummary = generationSummaryText(res.critique_summary_json);
-      setExportText(`生成状态：${res.status}\n新建 ${res.cards_created} 张，跳过 ${res.cards_skipped} 张，重复 ${res.duplicate_count} 张。\n${critiqueSummary}\n${res.error_msg || ""}`);
+      setNotice(`生成状态：${res.status}；新建 ${res.cards_created} 张，跳过 ${res.cards_skipped} 张，重复 ${res.duplicate_count} 张。${critiqueSummary ? ` ${critiqueSummary}` : ""}${res.error_msg ? ` ${res.error_msg}` : ""}`);
       if (res.run_id && !runId) setRunId(res.run_id);
       setCreatedBy("ai");
       setStatus("draft");
@@ -293,28 +297,38 @@ export default function KnowledgePage() {
     }
   }, [mergeTargets]);
 
-  const handleExportMarkdown = useCallback(async () => {
-    try {
-      setExportText((await exportWritingMarkdown()).content);
-    } catch (err) {
-      setError(errMessage(err));
-    }
-  }, []);
+  const exportItems = useMemo<ExportItem[]>(() => [
+    {
+      id: "writing-markdown",
+      label: "素材 Markdown",
+      description: "复制写作素材，包含证据来源。",
+      filename: "ai4sec-writing-traceable.md",
+      mime: "text/markdown;charset=utf-8",
+      emptyMessage: "暂无可复制的写作素材，请先把卡片加入写作素材篮。",
+      load: async () => (await exportWritingMarkdown()).content,
+    },
+    {
+      id: "papers-bibtex",
+      label: "BibTeX",
+      description: "复制论文引用，适合 LaTeX。",
+      filename: "ai4sec-papers.bib",
+      mime: "application/x-bibtex;charset=utf-8",
+      emptyMessage: "暂无可复制的 BibTeX，请先导入或解析论文引用。",
+      load: async () => (await exportPapersBibtex()).content,
+    },
+    {
+      id: "papers-ris",
+      label: "RIS",
+      description: "复制引用记录，适合文献管理器。",
+      filename: "ai4sec-papers.ris",
+      mime: "application/x-research-info-systems;charset=utf-8",
+      emptyMessage: "暂无可复制的 RIS，请先导入或解析论文引用。",
+      load: async () => (await exportPapersRis()).content,
+    },
+  ], []);
 
-  const handleExportBibtex = useCallback(async () => {
-    try {
-      setExportText((await exportPapersBibtex()).content);
-    } catch (err) {
-      setError(errMessage(err));
-    }
-  }, []);
-
-  const handleExportRis = useCallback(async () => {
-    try {
-      setExportText((await exportPapersRis()).content);
-    } catch (err) {
-      setError(errMessage(err));
-    }
+  const setPanelError = useCallback((message: string) => {
+    setError(message);
   }, []);
 
   const handleImportReferences = useCallback(async () => {
@@ -326,7 +340,7 @@ export default function KnowledgePage() {
     setSaving(true);
     try {
       const res = await importReferences({ content, format: referenceFormat });
-      setExportText(`导入 ${res.imported} 条，跳过 ${res.skipped} 条。\n仅导入引用记录，不代表已有 PDF 或解析结果。\n${res.paper_ids.join("\n")}`);
+      setNotice(`导入 ${res.imported} 条，跳过 ${res.skipped} 条。仅导入引用记录，不代表已有 PDF 或解析结果。`);
       setReferenceText("");
       await load();
     } catch (err) {
@@ -338,57 +352,48 @@ export default function KnowledgePage() {
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl font-semibold tracking-tight">知识卡片</h1>
-          <p className="mt-1 text-sm text-muted-foreground">管理已确认知识、待确认 AI 卡片和写作素材。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={handleExportMarkdown} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted">
-            导出素材 Markdown
-          </button>
-          <button onClick={handleExportBibtex} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted">
-            导出 BibTeX
-          </button>
-          <button onClick={handleExportRis} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted">
-            导出 RIS
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        icon={IconCards}
+        title="知识卡片"
+        subtitle="管理已确认知识、待确认 AI 卡片和写作素材。"
+      />
 
-      {error && <p className="mb-4 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+      {error && <p className="alert alert-error mb-4">{error}</p>}
+      {notice && <p className="alert mb-4 text-muted-foreground">{notice}</p>}
+
+      <ExportPanel items={exportItems} onError={setPanelError} />
 
       <section className="mb-5 grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
-        <div className="rounded-xl border border-border bg-card p-4">
+        <div className="surface-card p-4">
           <h2 className="mb-3 text-sm font-semibold">新建知识卡片</h2>
           <div className="grid gap-2 md:grid-cols-2">
-            <select value={draft.card_type} onChange={(e) => setDraft({ ...draft, card_type: e.target.value as KnowledgeCardType })} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
-              {CARD_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            <select value={draft.card_type} onChange={(e) => setDraft({ ...draft, card_type: e.target.value as KnowledgeCardType })} className="field">
+              {CARD_TYPES.map((type) => <option key={type} value={type}>{cardTypeLabel(type)}</option>)}
             </select>
-            <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="标题" className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" />
-            <input value={draft.paper_id} onChange={(e) => setDraft({ ...draft, paper_id: e.target.value })} placeholder="paper_id" className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" />
-            <input value={draft.source_page} onChange={(e) => setDraft({ ...draft, source_page: e.target.value })} placeholder="来源页码" inputMode="numeric" className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" />
-            <textarea value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} placeholder="内容" rows={3} className="resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 md:col-span-2" />
-            <textarea value={draft.source_quote} onChange={(e) => setDraft({ ...draft, source_quote: e.target.value })} placeholder="原文摘录" rows={2} className="resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 md:col-span-2" />
-            <input value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} placeholder="标签，逗号分隔" className="rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50 md:col-span-2" />
+            <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="标题" className="field" />
+            <input value={draft.paper_id} onChange={(e) => setDraft({ ...draft, paper_id: e.target.value })} placeholder="paper_id" className="field" />
+            <input value={draft.source_page} onChange={(e) => setDraft({ ...draft, source_page: e.target.value })} placeholder="来源页码" inputMode="numeric" className="field" />
+            <textarea value={draft.content} onChange={(e) => setDraft({ ...draft, content: e.target.value })} placeholder="内容" rows={3} className="field resize-y md:col-span-2" />
+            <textarea value={draft.source_quote} onChange={(e) => setDraft({ ...draft, source_quote: e.target.value })} placeholder="原文摘录" rows={2} className="field resize-y md:col-span-2" />
+            <input value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} placeholder="标签，逗号分隔" className="field md:col-span-2" />
           </div>
           <div className="mt-3 flex flex-wrap justify-end gap-2">
-            <button onClick={handleGenerateCards} disabled={saving} className="rounded-lg border border-border px-4 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50">
+            <button onClick={handleGenerateCards} disabled={saving} className="btn btn-outline">
               生成 AI 草稿
             </button>
-            <button onClick={handleCreateCard} disabled={saving} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary-hover disabled:opacity-50">
+            <button onClick={handleCreateCard} disabled={saving} className="btn btn-primary">
               {saving ? "保存中" : "保存卡片"}
             </button>
           </div>
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-4">
+        <div className="surface-card p-4">
           <h2 className="mb-3 text-sm font-semibold">导入参考文献</h2>
           <div className="mb-2 flex items-center gap-2">
             <select
               value={referenceFormat}
               onChange={(e) => setReferenceFormat(e.target.value as "bibtex" | "ris")}
-              className="rounded-lg border border-border bg-background px-3 py-2 text-sm"
+              className="field"
             >
               <option value="bibtex">BibTeX</option>
               <option value="ris">RIS</option>
@@ -396,7 +401,7 @@ export default function KnowledgePage() {
             <button
               onClick={handleImportReferences}
               disabled={saving}
-              className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50"
+              className="btn btn-outline"
             >
               导入
             </button>
@@ -406,11 +411,11 @@ export default function KnowledgePage() {
             onChange={(e) => setReferenceText(e.target.value)}
             placeholder="@article{...} 或 TY  - JOUR"
             rows={8}
-            className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary/50"
+            className="w-full resize-y field font-mono text-xs"
           />
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-4">
+        <div className="surface-card p-4">
           <h2 className="mb-3 text-sm font-semibold">写作素材篮</h2>
           <div className="max-h-[28rem] space-y-2 overflow-auto pr-1">
             {snippets.slice(0, 12).map((snippet) => (
@@ -433,7 +438,7 @@ export default function KnowledgePage() {
         </div>
       </section>
 
-      <section className="mb-5 rounded-xl border border-border bg-card p-4">
+      <section className="mb-5 surface-card p-4">
         <div className="mb-3 flex flex-wrap gap-2">
           {[
             { value: "action", label: "行动卡", count: assetCounts.action },
@@ -456,42 +461,42 @@ export default function KnowledgePage() {
           ))}
         </div>
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索卡片标题、内容、quote 或标签" className="min-w-[16rem] flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" />
-          <input value={runId} onChange={(e) => setRunId(e.target.value)} placeholder="run_id" className="w-44 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50" />
-          <select value={cardType} onChange={(e) => setCardType(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索卡片标题、内容、原文摘录或标签" className="min-w-[16rem] flex-1 field" />
+          <input value={runId} onChange={(e) => setRunId(e.target.value)} placeholder="run_id" className="w-44 field" />
+          <select value={cardType} onChange={(e) => setCardType(e.target.value)} className="field">
             <option value="">全部类型</option>
-            {CARD_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            {CARD_TYPES.map((type) => <option key={type} value={type}>{cardTypeLabel(type)}</option>)}
           </select>
-          <select value={createdBy} onChange={(e) => setCreatedBy(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+          <select value={createdBy} onChange={(e) => setCreatedBy(e.target.value)} className="field">
             <option value="">全部来源</option>
-            <option value="ai">AI 草稿</option>
-            <option value="user">用户创建</option>
+            <option value="ai">{createdByLabel("ai")}</option>
+            <option value="user">{createdByLabel("user")}</option>
           </select>
-          <select value={hasSource} onChange={(e) => setHasSource(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+          <select value={hasSource} onChange={(e) => setHasSource(e.target.value)} className="field">
             <option value="">来源状态</option>
             <option value="true">有来源</option>
             <option value="false">来源不完整</option>
           </select>
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="field">
             <option value="active">活跃卡片</option>
             <option value="">全部状态</option>
-            {CARD_STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
+            {CARD_STATUSES.map((item) => <option key={item} value={item}>{cardStatusLabel(item)}</option>)}
           </select>
-          <button onClick={load} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted">刷新</button>
+          <button onClick={load} className="btn btn-outline">刷新</button>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>待确认 AI 卡片：{pendingAiCards.length}；已选择：{selectedIds.size}</span>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => setSelectedIds(new Set(cards.map((card) => card.card_id)))} disabled={!cards.length} className="rounded-lg border border-border px-2 py-1 transition-colors hover:bg-muted disabled:opacity-40">
+            <button onClick={() => setSelectedIds(new Set(cards.map((card) => card.card_id)))} disabled={!cards.length} className="btn btn-outline btn-sm">
               全选
             </button>
-            <button onClick={() => setSelectedIds(new Set())} disabled={!selectedIds.size} className="rounded-lg border border-border px-2 py-1 transition-colors hover:bg-muted disabled:opacity-40">
+            <button onClick={() => setSelectedIds(new Set())} disabled={!selectedIds.size} className="btn btn-outline btn-sm">
               清空
             </button>
-            <button onClick={() => handleBatchStatus("verified")} disabled={!selectedIds.size} className="rounded-lg border border-border px-2 py-1 transition-colors hover:bg-muted disabled:opacity-40">
+            <button onClick={() => handleBatchStatus("verified")} disabled={!selectedIds.size} className="btn btn-outline btn-sm">
               批量确认
             </button>
-            <button onClick={() => handleBatchStatus("rejected")} disabled={!selectedIds.size} className="rounded-lg border border-border px-2 py-1 transition-colors hover:bg-muted disabled:opacity-40">
+            <button onClick={() => handleBatchStatus("rejected")} disabled={!selectedIds.size} className="btn btn-outline btn-sm">
               批量废弃
             </button>
           </div>
@@ -516,16 +521,10 @@ export default function KnowledgePage() {
               onToggleSelected={toggleSelected}
             />
           ))}
-          {!cards.length && <div className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground lg:col-span-2">暂无知识卡片。</div>}
+          {!cards.length && <div className="surface-card p-10 text-center text-sm text-muted-foreground lg:col-span-2">暂无知识卡片。</div>}
         </div>
       )}
 
-      {exportText && (
-        <section className="mt-5 rounded-xl border border-border bg-card p-4">
-          <h2 className="mb-3 text-sm font-semibold">导出内容</h2>
-          <pre className="max-h-96 overflow-auto rounded-lg border border-border bg-background p-3 text-xs leading-5 whitespace-pre-wrap">{exportText}</pre>
-        </section>
-      )}
     </div>
   );
 }
@@ -576,7 +575,7 @@ function SnippetItem({
   return (
     <div className="rounded-lg border border-border bg-background p-3">
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>{snippet.section_hint}</span>
+        <span>{sectionHintLabel(snippet.section_hint)}</span>
         {snippet.citation_key && <span>@{snippet.citation_key}</span>}
       </div>
       {editing ? (
@@ -584,7 +583,7 @@ function SnippetItem({
           value={content}
           onChange={(e) => setContent(e.target.value)}
           rows={3}
-          className="mt-2 w-full resize-y rounded-lg border border-border bg-card px-2 py-1.5 text-sm outline-none focus:border-primary/50"
+          className="mt-2 w-full resize-y field"
         />
       ) : (
         <p className="mt-1 line-clamp-3 text-sm leading-6">{snippet.content}</p>
@@ -592,27 +591,27 @@ function SnippetItem({
       <div className="mt-2 space-y-1 text-xs text-muted-foreground">
         {(snippet.paper_id || snippet.source_card_id || snippet.source_page > 0) && (
           <p>
-            {snippet.paper_id && <span>paper: {snippet.paper_id.slice(0, 10)} </span>}
-            {snippet.source_card_id && <span>card: {snippet.source_card_id.slice(0, 10)} </span>}
-            {snippet.source_page > 0 && <span>p.{snippet.source_page}</span>}
+            {snippet.paper_id && <span>论文：{snippet.paper_id.slice(0, 10)} </span>}
+            {snippet.source_card_id && <span>卡片：{snippet.source_card_id.slice(0, 10)} </span>}
+            {snippet.source_page > 0 && <span>第 {snippet.source_page} 页</span>}
           </p>
         )}
-        {snippet.source_quote && <p className="line-clamp-2">quote: {snippet.source_quote}</p>}
+        {snippet.source_quote && <p className="line-clamp-2">原文摘录：{snippet.source_quote}</p>}
       </div>
       <div className="mt-2 flex gap-2">
         {editing ? (
           <>
-            <button onClick={save} disabled={saving} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50">
+            <button onClick={save} disabled={saving} className="btn btn-outline btn-sm">
               {saving ? "保存中" : "保存"}
             </button>
-            <button onClick={() => { setEditing(false); setContent(snippet.content); }} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">
+            <button onClick={() => { setEditing(false); setContent(snippet.content); }} className="btn btn-outline btn-sm">
               取消
             </button>
           </>
         ) : (
-          <button onClick={() => setEditing(true)} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">编辑</button>
+          <button onClick={() => setEditing(true)} className="btn btn-outline btn-sm">编辑</button>
         )}
-        <button onClick={remove} className="rounded-lg border border-border px-2 py-1 text-xs hover:bg-muted">删除</button>
+        <button onClick={remove} className="btn btn-outline btn-sm">删除</button>
       </div>
     </div>
   );
@@ -640,7 +639,7 @@ function CardItem({
   onToggleSelected: (cardId: string) => void;
 }) {
   return (
-    <article className="rounded-xl border border-border bg-card p-4">
+    <article className="surface-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 gap-2">
           <input
@@ -659,14 +658,14 @@ function CardItem({
                   ? "bg-success/10 text-success"
                   : "bg-muted text-muted-foreground"
             }`}>
-              {card.asset_level}
+              {assetLevelLabel(card.asset_level)}
             </span>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{card.card_type}</span>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{card.status}</span>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{card.created_by}</span>
-            {card.asset_level === "action" && card.action_type && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{card.action_type}</span>}
-            {card.priority && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">P {card.priority}</span>}
-            {card.confidence > 0 && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">conf {card.confidence.toFixed(2)}</span>}
+            <span className="chip chip-muted">{cardTypeLabel(card.card_type)}</span>
+            <span className="chip chip-muted">{cardStatusLabel(card.status)}</span>
+            <span className="chip chip-muted">{createdByLabel(card.created_by)}</span>
+            {card.asset_level === "action" && card.action_type && <span className="chip chip-muted">{card.action_type}</span>}
+            {card.priority && <span className="chip chip-muted">P {card.priority}</span>}
+            {card.confidence > 0 && <span className="chip chip-muted">置信度 {card.confidence.toFixed(2)}</span>}
             <span className={`rounded-full px-2 py-0.5 text-xs ${hasTraceableSource(card) ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
               {hasTraceableSource(card) ? "有来源" : "来源不完整"}
             </span>
@@ -675,7 +674,7 @@ function CardItem({
           </div>
         </div>
         {card.paper_id && (
-          <Link href={`/papers#paper-${card.paper_id}`} className="rounded-lg border border-border px-2 py-1.5 text-xs transition-colors hover:bg-muted">
+          <Link href={`/papers#paper-${card.paper_id}`} className="btn btn-outline btn-sm">
             来源论文
           </Link>
         )}
@@ -711,34 +710,34 @@ function CardItem({
       )}
       {card.source_quote && (
         <blockquote className="mt-3 border-l-2 border-primary/50 pl-3 text-xs leading-5 text-muted-foreground">
-          p.{card.source_page || "-"} {card.source_quote}
+          第 {card.source_page || "-"} 页 {card.source_quote}
         </blockquote>
       )}
       {(card.run_id || card.source_kind || card.source_ref || card.quality_flags.length > 0) && (
         <div className="mt-3 space-y-1 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-          {card.run_id && <p>run: {card.run_id}</p>}
-          {(card.source_kind || card.source_ref) && <p>source: {[card.source_kind, card.source_ref].filter(Boolean).join(" / ")}</p>}
-          {card.evidence_strength && <p>evidence: {card.evidence_strength}</p>}
-          {card.supporting_paper_ids.length > 0 && <p>supporting papers: {card.supporting_paper_ids.map((id) => id.slice(0, 10)).join(", ")}</p>}
-          {card.quality_flags.length > 0 && <p>flags: {card.quality_flags.join(", ")}</p>}
+          {card.run_id && <p>运行：{card.run_id}</p>}
+          {(card.source_kind || card.source_ref) && <p>来源：{[card.source_kind, card.source_ref].filter(Boolean).join(" / ")}</p>}
+          {card.evidence_strength && <p>证据：{card.evidence_strength}</p>}
+          {card.supporting_paper_ids.length > 0 && <p>支撑论文：{card.supporting_paper_ids.map((id) => id.slice(0, 10)).join(", ")}</p>}
+          {card.quality_flags.length > 0 && <p>质量标记：{card.quality_flags.join(", ")}</p>}
         </div>
       )}
       <div className="mt-3 flex flex-wrap gap-1.5">
         {card.tags.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => (
-          <span key={tag} className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">{tag}</span>
+          <span key={tag} className="chip">{tag}</span>
         ))}
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
-        <button onClick={() => onStatus(card, "verified")} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted">确认</button>
-        <button onClick={() => onStatus(card, "rejected")} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted">废弃</button>
+        <button onClick={() => onStatus(card, "verified")} className="btn btn-outline btn-sm">确认</button>
+        <button onClick={() => onStatus(card, "rejected")} className="btn btn-outline btn-sm">废弃</button>
         {SECTION_HINTS.map((hint) => (
           <button
             key={hint}
             onClick={() => onSnippet(card, hint)}
             disabled={card.status === "rejected" || card.status === "merged"}
-            className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-muted disabled:opacity-40"
+            className="btn btn-outline btn-sm"
           >
-            加入 {hint}
+            加入{sectionHintLabel(hint)}
           </button>
         ))}
       </div>
@@ -749,7 +748,7 @@ function CardItem({
             <option key={item.card_id} value={item.card_id}>{item.title}</option>
           ))}
         </select>
-        <button onClick={() => onMerge(card)} disabled={!mergeTarget} className="rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted disabled:opacity-50">
+        <button onClick={() => onMerge(card)} disabled={!mergeTarget} className="btn btn-outline">
           合并
         </button>
       </div>

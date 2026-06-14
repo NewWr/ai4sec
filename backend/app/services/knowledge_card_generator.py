@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.db import database as db
 from app.services import knowledge_assets as assets
 from app.services import evidence_store
+from app.services import entity_registry
 from app.services.llm_service import get_llm_service
 
 logger = logging.getLogger("scholar.knowledge_cards")
@@ -580,6 +581,10 @@ async def _is_duplicate(card: dict[str, Any]) -> bool:
             (str(card.get("paper_id") or ""), quote),
         )
         return bool(row)
+    try:
+        return bool(await entity_registry.semantic_duplicate_card(card))
+    except Exception as exc:
+        logger.debug("semantic duplicate check skipped: %s", exc)
     return False
 
 

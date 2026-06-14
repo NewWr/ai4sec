@@ -29,7 +29,7 @@ CREATED_BY = {"user", "ai"}
 ASSET_LEVELS = {"evidence", "synthesis", "action"}
 PRIORITIES = {"high", "medium", "low"}
 AI_REVIEW_STATUSES = {"trusted", "pending", "error", "valuable"}
-SECTION_HINTS = {"related_work", "method", "experiment", "limitation"}
+SECTION_HINTS = {"related_work", "method", "experiment", "limitation", "idea_brief"}
 
 
 def _new_id(prefix: str) -> str:

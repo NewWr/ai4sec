@@ -607,6 +607,19 @@ async def _clear_auto_discovery(paper_ids: list[str]) -> None:
     placeholders = ",".join("?" for _ in paper_ids)
     await db.execute(
         f"""
+        DELETE FROM research_evidence_cards
+         WHERE evidence_id IN (
+               SELECT evidence_id
+                 FROM research_evidence_items
+                WHERE paper_id IN ({placeholders})
+                  AND extractor = ?
+                  AND status = 'unverified'
+         )
+        """,
+        tuple(paper_ids + [EXTRACTOR]),
+    )
+    await db.execute(
+        f"""
         DELETE FROM research_evidence_items
          WHERE paper_id IN ({placeholders})
            AND extractor = ?
