@@ -1,7 +1,0 @@
-FROM ai4sec-dify-sync-ai4sec-dify-sync:latest
-
-WORKDIR /app
-COPY ai4sec_dify_sync ./ai4sec_dify_sync
-COPY pyproject.toml ./
-
-CMD ["ai4sec-dify-sync", "watch", "--interval", "30"]

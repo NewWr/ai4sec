@@ -220,6 +220,10 @@ export interface DailyRecommendationTopic {
   config: Record<string, unknown>;
 }
 
+export interface DailyRecommendationTopicsUpdateRequest {
+  topics: DailyRecommendationTopic[];
+}
+
 export type DailyRecommendationStatus =
   | "candidate"
   | "interested"
@@ -332,7 +336,148 @@ export interface DailyRecommendationIngestResponse {
   message: string;
 }
 
-export type KnowledgeSpaceItemKind = "paper" | "run" | "dify_document" | "card" | "snippet";
+export interface ExternalSource {
+  source_id: string;
+  name: string;
+  source_type: string;
+  repo_owner: string;
+  repo_name: string;
+  branch: string;
+  docs_path: string;
+  homepage_url: string;
+  license_name: string;
+  license_url: string;
+  enabled: boolean;
+  config_json: string;
+  last_commit_sha: string;
+  last_synced_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ExternalNoteStatus =
+  | "new"
+  | "useful"
+  | "later"
+  | "ignored"
+  | "irrelevant"
+  | "promoted"
+  | "linked"
+  | "stale";
+
+export type ExternalNoteSort = "utility" | "updated" | "conference" | "year";
+
+export interface ExternalNoteSyncRun {
+  sync_id: string;
+  source_id: string;
+  status: string;
+  commit_sha: string;
+  scanned: number;
+  fetched: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  failed: number;
+  error_json: string;
+  errors: Array<Record<string, string>>;
+  started_at: string;
+  finished_at: string;
+  created_at: string;
+}
+
+export interface ExternalNoteMatch {
+  match_id: string;
+  note_id: string;
+  target_kind: string;
+  target_id: string;
+  match_type: string;
+  confidence: number;
+  reason: string;
+  created_at: string;
+}
+
+export interface ExternalNoteFacetOption {
+  value: string | number;
+  count: number;
+}
+
+export interface ExternalNoteFacets {
+  conferences: ExternalNoteFacetOption[];
+  years: ExternalNoteFacetOption[];
+  domains: ExternalNoteFacetOption[];
+}
+
+export interface ExternalPaperNote {
+  note_id: string;
+  source_id: string;
+  source_path: string;
+  source_url: string;
+  raw_url: string;
+  commit_sha: string;
+  content_hash: string;
+  conference: string;
+  year: number;
+  domain: string;
+  title: string;
+  title_zh: string;
+  arxiv_id: string;
+  arxiv_url: string;
+  pdf_url: string;
+  code_url: string;
+  project_url: string;
+  authors: string[];
+  tags: string[];
+  keywords: string[];
+  summary: string;
+  method: string;
+  experiments: string;
+  limitations: string;
+  related_papers: string[];
+  markdown?: string;
+  parsed?: Record<string, unknown>;
+  status: ExternalNoteStatus;
+  utility_score: number;
+  utility_reason: string;
+  linked_paper_id: string;
+  linked_daily_item_id: string;
+  linked_run_id: string;
+  sync_status: string;
+  dify_document_id: string;
+  error_msg: string;
+  first_seen_at: string;
+  updated_at: string;
+  matches?: ExternalNoteMatch[];
+}
+
+export interface ExternalPaperNoteListResponse {
+  items: ExternalPaperNote[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  latest_sync: ExternalNoteSyncRun | null;
+}
+
+export interface PaperNotesSyncRequest {
+  force?: boolean;
+  max_files?: number;
+}
+
+export interface ExternalNoteStatusRequest {
+  status: ExternalNoteStatus;
+  note?: string;
+}
+
+export interface ExternalNoteStartRunRequest {
+  mode?: ReadingMode;
+  llm_model?: string;
+  language?: string;
+  question?: string;
+  owner_token?: string;
+  auto_promote?: boolean;
+}
+
+export type KnowledgeSpaceItemKind = "paper" | "run" | "dify_document" | "card" | "snippet" | "external_note";
 
 export interface KnowledgeSpace {
   space_id: string;

@@ -64,6 +64,7 @@ test_doc/
 test_result/
 tmp/
 temp/
+*.patch
 
 # === Generated analysis exports (Insight Snap / Logic Lens markdown) ===
 *_lens.md

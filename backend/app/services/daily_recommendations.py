@@ -57,7 +57,40 @@ def _topic_id(raw: dict[str, Any]) -> str:
     return str(raw.get("topic_id") or raw.get("id") or "").strip()
 
 
+def _normalize_topic_config(topic_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    data = dict(config or {})
+    data["id"] = topic_id
+    data["arxiv_categories"] = [
+        str(item).strip()
+        for item in data.get("arxiv_categories", [])
+        if str(item).strip()
+    ]
+    must = data.get("must") if isinstance(data.get("must"), dict) else {}
+    groups: list[list[str]] = []
+    for group in must.get("any", []) if isinstance(must.get("any"), list) else []:
+        if not isinstance(group, list):
+            continue
+        terms = [str(term).strip() for term in group if str(term).strip()]
+        if terms:
+            groups.append(terms)
+    data["must"] = {"any": groups}
+    for key in ("should", "exclude"):
+        data[key] = [
+            str(item).strip()
+            for item in data.get(key, [])
+            if str(item).strip()
+        ]
+    try:
+        data["min_score"] = max(0.0, min(1.0, float(data.get("min_score", get_settings().daily_recommendation_min_score))))
+    except (TypeError, ValueError):
+        data["min_score"] = float(get_settings().daily_recommendation_min_score)
+    return data
+
+
 async def ensure_default_topics() -> None:
+    existing = await db.fetch_one("SELECT COUNT(*) AS n FROM daily_recommendation_topics")
+    if int((existing or {}).get("n") or 0) > 0:
+        return
     current_ids: set[str] = set()
     for idx, topic in enumerate(DEFAULT_TOPICS):
         topic_id = _topic_id(topic)
@@ -70,17 +103,13 @@ async def ensure_default_topics() -> None:
                 topic_id, name, name_zh, config_json, enabled, sort_order, updated_at
             ) VALUES (?, ?, ?, ?, 1, ?, datetime('now'))
             ON CONFLICT(topic_id) DO UPDATE SET
-                name = excluded.name,
-                name_zh = excluded.name_zh,
-                config_json = excluded.config_json,
-                sort_order = excluded.sort_order,
                 updated_at = datetime('now')
             """,
             (
                 topic_id,
                 str(topic.get("name") or topic_id),
                 str(topic.get("name_zh") or ""),
-                _json_dumps(topic),
+                _json_dumps(_normalize_topic_config(topic_id, topic)),
                 int(topic.get("sort_order") or (idx + 1) * 10),
             ),
         )
@@ -95,6 +124,67 @@ async def ensure_default_topics() -> None:
             """,
             tuple(stale_legacy_ids),
         )
+
+
+async def update_topics(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not topics:
+        raise ValueError("At least one daily recommendation topic is required")
+    seen: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for index, raw in enumerate(topics):
+        topic_id = _topic_id(raw)
+        if not topic_id:
+            raise ValueError("topic_id is required")
+        if topic_id in seen:
+            raise ValueError(f"Duplicate topic_id: {topic_id}")
+        seen.add(topic_id)
+        name = str(raw.get("name") or topic_id).strip()
+        name_zh = str(raw.get("name_zh") or "").strip()
+        config = _normalize_topic_config(topic_id, raw.get("config") if isinstance(raw.get("config"), dict) else raw)
+        config["name"] = name
+        config["name_zh"] = name_zh
+        try:
+            sort_order = int(raw.get("sort_order") or config.get("sort_order") or (index + 1) * 10)
+        except (TypeError, ValueError):
+            sort_order = (index + 1) * 10
+        config["sort_order"] = sort_order
+        enabled = bool(raw.get("enabled", True))
+        normalized.append(
+            {
+                "topic_id": topic_id,
+                "name": name,
+                "name_zh": name_zh,
+                "enabled": enabled,
+                "sort_order": sort_order,
+                "config": config,
+            }
+        )
+    async with db.transaction() as conn:
+        await conn.execute("UPDATE daily_recommendation_topics SET enabled = 0, updated_at = datetime('now')")
+        for topic in normalized:
+            await conn.execute(
+                """
+                INSERT INTO daily_recommendation_topics (
+                    topic_id, name, name_zh, config_json, enabled, sort_order, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(topic_id) DO UPDATE SET
+                    name = excluded.name,
+                    name_zh = excluded.name_zh,
+                    config_json = excluded.config_json,
+                    enabled = excluded.enabled,
+                    sort_order = excluded.sort_order,
+                    updated_at = datetime('now')
+                """,
+                (
+                    topic["topic_id"],
+                    topic["name"],
+                    topic["name_zh"],
+                    _json_dumps(topic["config"]),
+                    1 if topic["enabled"] else 0,
+                    topic["sort_order"],
+                ),
+            )
+    return await list_topics()
 
 
 async def list_topics() -> list[dict[str, Any]]:

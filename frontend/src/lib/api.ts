@@ -93,6 +93,15 @@ import type {
   DailyRecommendationRefreshRequest,
   DailyRecommendationRefreshResponse,
   DailyRecommendationTopic,
+  DailyRecommendationTopicsUpdateRequest,
+  ExternalNoteSort,
+  ExternalNoteStartRunRequest,
+  ExternalNoteStatus,
+  ExternalNoteSyncRun,
+  ExternalNoteFacets,
+  ExternalPaperNote,
+  ExternalPaperNoteListResponse,
+  ExternalSource,
   KnowledgeSpaceDifyDatasetCreateRequest,
   KnowledgeSpaceDifyDatasetResponse,
   KnowledgeSpaceDifyDocumentsResponse,
@@ -201,6 +210,23 @@ export async function listDailyTopics(): Promise<DailyRecommendationTopic[]> {
   return request("/daily/topics");
 }
 
+export async function getDailyTopicSettings(): Promise<DailyRecommendationTopic[]> {
+  return request("/settings/daily-topics");
+}
+
+export async function updateDailyTopicSettings(
+  body: DailyRecommendationTopicsUpdateRequest,
+  adminToken = "",
+): Promise<DailyRecommendationTopic[]> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (adminToken.trim()) headers["X-Admin-Token"] = adminToken.trim();
+  return request("/settings/daily-topics", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
 export async function listDailyRecommendations(opts: {
   date?: string;
   topic_id?: string;
@@ -236,6 +262,116 @@ export async function updateDailyRecommendationFeedback(
   body: DailyRecommendationFeedbackRequest,
 ): Promise<DailyRecommendationItem> {
   return request(`/daily/items/${itemId}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listPaperNoteSources(): Promise<ExternalSource[]> {
+  return request("/paper-notes/sources");
+}
+
+export async function listPaperNoteFacets(): Promise<ExternalNoteFacets> {
+  return request("/paper-notes/facets");
+}
+
+export async function syncPaperNotes(body: { force?: boolean; max_files?: number } = {}): Promise<ExternalNoteSyncRun> {
+  return request("/paper-notes/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getPaperNotesSync(syncId: string): Promise<ExternalNoteSyncRun> {
+  return request(`/paper-notes/sync/${encodeURIComponent(syncId)}`);
+}
+
+export async function listPaperNotes(opts: {
+  conference?: string;
+  year?: number;
+  domain?: string;
+  status?: ExternalNoteStatus | "";
+  q?: string;
+  has_arxiv?: boolean | null;
+  linked?: boolean | null;
+  min_score?: number;
+  sort?: ExternalNoteSort;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<ExternalPaperNoteListResponse> {
+  const qs = new URLSearchParams();
+  if (opts.conference) qs.set("conference", opts.conference);
+  if (opts.year) qs.set("year", String(opts.year));
+  if (opts.domain) qs.set("domain", opts.domain);
+  if (opts.status) qs.set("status", opts.status);
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.has_arxiv !== undefined && opts.has_arxiv !== null) qs.set("has_arxiv", String(opts.has_arxiv));
+  if (opts.linked !== undefined && opts.linked !== null) qs.set("linked", String(opts.linked));
+  if (opts.min_score) qs.set("min_score", String(opts.min_score));
+  if (opts.sort) qs.set("sort", opts.sort);
+  qs.set("limit", String(opts.limit ?? 20));
+  qs.set("offset", String(opts.offset ?? 0));
+  return request(`/paper-notes/items?${qs.toString()}`);
+}
+
+export async function getExternalPaperNote(noteId: string): Promise<ExternalPaperNote> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}`);
+}
+
+export async function updatePaperNoteStatus(
+  noteId: string,
+  body: { status: ExternalNoteStatus; note?: string },
+): Promise<ExternalPaperNote> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function refreshPaperNoteScore(noteId: string): Promise<ExternalPaperNote> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/refresh-score`, { method: "POST" });
+}
+
+export async function promotePaperNote(noteId: string, body: { collection_id?: string } = {}): Promise<{ note_id: string; paper_id: string; status: string }> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/promote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function startPaperNoteRun(
+  noteId: string,
+  body: ExternalNoteStartRunRequest,
+): Promise<{ note_id: string; paper_id: string; run_id: string; status: string }> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/start-run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, owner_token: getOwnerToken() }),
+  });
+}
+
+export async function addPaperNoteToDaily(noteId: string, body: { topic_id?: string } = {}): Promise<{ note_id: string; item_id: string; topic_id: string; status: string }> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/add-to-daily`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function syncPaperNoteToSpace(noteId: string, body: { space_id?: string } = {}): Promise<{ sync_status: string; dify_document_id: string }> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/sync-space`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function generatePaperNoteCards(noteId: string, body: { max_cards?: number } = {}): Promise<{ note_id: string; card_ids: string[]; cards_created: number }> {
+  return request(`/paper-notes/items/${encodeURIComponent(noteId)}/generate-cards`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

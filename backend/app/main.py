@@ -13,6 +13,7 @@ from app.db.database import close_db, init_db, open_db, set_db_path
 from app.rate_limit import limiter
 from app.services.construction_scheduler import start_construction_scheduler, stop_construction_scheduler
 from app.services.daily_scheduler import start_daily_scheduler, stop_daily_scheduler
+from app.services.external_note_scheduler import start_external_note_scheduler, stop_external_note_scheduler
 from app.services.http_clients import close_http_clients, init_http_clients
 
 
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
         logger.exception("backfill_card_evidence failed (non-fatal)")
     await init_http_clients()
     await start_daily_scheduler()
+    await start_external_note_scheduler()
     await start_construction_scheduler()
     logger.info(f"Database initialized at {data_dir / 'app.db'}")
     logger.info(
@@ -71,6 +73,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await stop_construction_scheduler()
+        await stop_external_note_scheduler()
         await stop_daily_scheduler()
         await close_http_clients()
         await close_db()
@@ -117,6 +120,7 @@ def create_app() -> FastAPI:
     from app.api.knowledge import router as knowledge_router
     from app.api.knowledge_spaces import router as knowledge_spaces_router
     from app.api.library import router as library_router
+    from app.api.paper_notes import router as paper_notes_router
     from app.api.papers import router as papers_router
     from app.api.runs import router as runs_router
     from app.api.settings import router as settings_router
@@ -125,6 +129,7 @@ def create_app() -> FastAPI:
 
     app.include_router(papers_router, prefix="/api")
     app.include_router(daily_router, prefix="/api")
+    app.include_router(paper_notes_router, prefix="/api")
     app.include_router(knowledge_router, prefix="/api")
     app.include_router(knowledge_spaces_router, prefix="/api")
     app.include_router(runs_router, prefix="/api")

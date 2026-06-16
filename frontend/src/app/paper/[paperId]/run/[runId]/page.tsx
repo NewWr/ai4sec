@@ -146,6 +146,7 @@ export default function RunPage() {
   const [noteSaving, setNoteSaving] = useState(false);
   const [assetMessage, setAssetMessage] = useState("");
   const [assetPanelOpen, setAssetPanelOpen] = useState(false);
+  const [showAnalysisSyncNotice, setShowAnalysisSyncNotice] = useState(false);
   const [targetPage, setTargetPage] = useState<number | undefined>(undefined);
   const [activeEvidenceAnchorId, setActiveEvidenceAnchorId] = useState("");
   const [pageLoadTime] = useState(() => performance.now());
@@ -203,6 +204,16 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
   useEffect(() => {
     refreshSyncStatus();
   }, [refreshSyncStatus]);
+
+  useEffect(() => {
+    if (!analysisSync) {
+      setShowAnalysisSyncNotice(false);
+      return;
+    }
+    setShowAnalysisSyncNotice(true);
+    const timer = window.setTimeout(() => setShowAnalysisSyncNotice(false), 4500);
+    return () => window.clearTimeout(timer);
+  }, [analysisSync?.status, analysisSync?.document_id, analysisSync?.updated_at]);
 
   const refreshAssets = useCallback(() => {
     Promise.all([
@@ -357,7 +368,7 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
       dirty: false,
     });
     setPendingSelection(null);
-    setAssetPanelOpen(true);
+    setAssetMessage("");
   }, []);
 
   const handleSaveNote = useCallback(async () => {
@@ -496,7 +507,6 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
       if (draft?.dirty) return draft;
       return draftFromSelection(selection);
     });
-    setAssetPanelOpen(true);
     setAssetMessage("");
   }, []);
 
@@ -654,7 +664,7 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
       </div>
 
       {/* Smart Q&A question + detected intent banner */}
-      {(run?.user_question || analysisSync) && (
+      {(run?.user_question || showAnalysisSyncNotice) && (
         <div className="shrink-0 border-b border-border bg-accent/40 px-5 py-2.5">
           {run?.user_question && (
             <p className="text-xs">
@@ -668,7 +678,7 @@ const { events, isConnected, isDone, error, connect } = useRunStream();
               <span className="font-medium text-primary">{t(`intent.${run.detected_intent}`)}</span>
             </p>
           )}
-          {analysisSync && (
+          {showAnalysisSyncNotice && analysisSync && (
             <p className="mt-0.5 text-xs">
               <span className="text-muted-foreground">{t("step.analysis_dify_sync")}</span>{" "}
               <span className="font-medium text-primary">{t(`sync.${analysisSync.status}`)}</span>

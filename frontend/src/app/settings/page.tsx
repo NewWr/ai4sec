@@ -1,8 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getLLMSettings, testLLMSettings, updateLLMSettings } from "@/lib/api";
-import type { LLMConnectionTestResponse, LLMSettingsResponse } from "@/lib/types";
+import {
+  getDailyTopicSettings,
+  getLLMSettings,
+  testLLMSettings,
+  updateDailyTopicSettings,
+  updateLLMSettings,
+} from "@/lib/api";
+import type { DailyRecommendationTopic, LLMConnectionTestResponse, LLMSettingsResponse } from "@/lib/types";
 import { PageHeader } from "@/components/PageHeader";
 import { IconCog, IconRefresh } from "@/components/icons";
 
@@ -10,8 +16,14 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function formatTopics(topics: DailyRecommendationTopic[]): string {
+  return JSON.stringify(topics, null, 2);
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<LLMSettingsResponse | null>(null);
+  const [dailyTopics, setDailyTopics] = useState<DailyRecommendationTopic[]>([]);
+  const [dailyTopicsText, setDailyTopicsText] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [thinkingModel, setThinkingModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState("medium");
@@ -37,7 +49,10 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      applySettings(await getLLMSettings());
+      const [llm, topics] = await Promise.all([getLLMSettings(), getDailyTopicSettings()]);
+      applySettings(llm);
+      setDailyTopics(topics);
+      setDailyTopicsText(formatTopics(topics));
       setError("");
     } catch (err) {
       setError(errMessage(err));
@@ -99,6 +114,25 @@ export default function SettingsPage() {
     }
   }, [adminToken, apiKey, baseUrl, clearApiKey, reasoningEffort, thinkingModel]);
 
+  const saveDailyTopics = useCallback(async () => {
+    setSaving(true);
+    try {
+      const parsed = JSON.parse(dailyTopicsText) as DailyRecommendationTopic[];
+      if (!Array.isArray(parsed)) {
+        throw new Error("每日推荐方向配置必须是数组。");
+      }
+      const topics = await updateDailyTopicSettings({ topics: parsed }, adminToken);
+      setDailyTopics(topics);
+      setDailyTopicsText(formatTopics(topics));
+      setMessage("每日推荐方向已保存，后续刷新会使用新关键词。");
+      setError("");
+    } catch (err) {
+      setError(errMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }, [adminToken, dailyTopicsText]);
+
   return (
     <div className="mx-auto max-w-4xl px-5 py-8">
       <PageHeader
@@ -126,15 +160,16 @@ export default function SettingsPage() {
           </div>
         </div>
       ) : (
-        <section className="surface-card soft-shadow p-5">
-          <div className="mb-5 flex flex-wrap gap-2 text-xs">
-            <span className="chip">来源：{settings?.source === "runtime" ? "网页配置" : ".env"}</span>
-            <span className="chip">
-              密钥：{settings?.api_key_configured ? `已配置，末尾 ${settings.api_key_suffix}` : "未配置"}
-            </span>
-            <span className="chip">默认模型：{settings?.default || "-"}</span>
-            <span className="chip">思考等级：{settings?.reasoning_effort || "medium"}</span>
-          </div>
+        <div className="grid gap-5">
+          <section className="surface-card soft-shadow p-5">
+            <div className="mb-5 flex flex-wrap gap-2 text-xs">
+              <span className="chip">来源：{settings?.source === "runtime" ? "网页配置" : ".env"}</span>
+              <span className="chip">
+                密钥：{settings?.api_key_configured ? `已配置，末尾 ${settings.api_key_suffix}` : "未配置"}
+              </span>
+              <span className="chip">默认模型：{settings?.default || "-"}</span>
+              <span className="chip">思考等级：{settings?.reasoning_effort || "medium"}</span>
+            </div>
 
           <div className="grid gap-4">
             <label className="grid gap-1.5">
@@ -246,7 +281,37 @@ export default function SettingsPage() {
               {saving ? "保存中" : "保存配置"}
             </button>
           </div>
-        </section>
+          </section>
+          <section className="surface-card soft-shadow p-5">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">每日推荐方向</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  配置 arXiv 类别、必须命中的关键词组、加分关键词、排除词和最低分；保存后无需重建 Docker。
+                </p>
+              </div>
+              <span className="chip">当前 {dailyTopics.length} 个方向</span>
+            </div>
+            <textarea
+              value={dailyTopicsText}
+              onChange={(event) => setDailyTopicsText(event.target.value)}
+              spellCheck={false}
+              className="field min-h-[420px] font-mono text-xs leading-5"
+            />
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                `must.any` 中每个内层数组表示一组必须同时出现的词；多组之间是 OR。
+              </p>
+              <button
+                onClick={saveDailyTopics}
+                disabled={saving || testing}
+                className="btn btn-primary"
+              >
+                {saving ? "保存中" : "保存每日推荐方向"}
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

@@ -259,6 +259,19 @@ class DailyRecommendationRefreshRequest(BaseModel):
     force: bool = False
 
 
+class DailyRecommendationTopicUpdate(BaseModel):
+    topic_id: str
+    name: str = ""
+    name_zh: str = ""
+    enabled: bool = True
+    sort_order: int = 0
+    config: dict[str, Any] = {}
+
+
+class DailyRecommendationTopicsUpdateRequest(BaseModel):
+    topics: list[DailyRecommendationTopicUpdate]
+
+
 class DailyRecommendationFeedbackRequest(BaseModel):
     action: Literal["interested", "irrelevant", "dismissed"]
     note: str = ""
@@ -280,7 +293,7 @@ class DailyRecommendationIngestRequest(BaseModel):
 
 class KnowledgeSpaceItemRef(BaseModel):
     space_id: str
-    item_kind: Literal["paper", "run", "dify_document", "card", "snippet"]
+    item_kind: Literal["paper", "run", "dify_document", "card", "snippet", "external_note"]
     item_id: str
 
 
@@ -327,7 +340,160 @@ class DailyRecommendationPromoteRequest(BaseModel):
     copy_item: bool = Field(default=True, alias="copy")
 
 
+ExternalNoteStatus = Literal["new", "useful", "later", "ignored", "irrelevant", "promoted", "linked", "stale"]
+ExternalNoteSort = Literal["utility", "updated", "conference", "year"]
+
+
+class PaperNotesSyncRequest(BaseModel):
+    force: bool = False
+    max_files: int = 0
+
+
+class ExternalNoteStatusRequest(BaseModel):
+    status: ExternalNoteStatus
+    note: str = ""
+
+
+class ExternalNoteLinkPaperRequest(BaseModel):
+    paper_id: str
+
+
+class ExternalNotePromoteRequest(BaseModel):
+    collection_id: str = ""
+
+
+class ExternalNoteStartRunRequest(BaseModel):
+    mode: Literal["snap", "lens", "sphere", "auto"] = "lens"
+    llm_model: str = ""
+    language: str = "zh"
+    question: str = ""
+    owner_token: str = ""
+    auto_promote: bool = False
+
+
+class ExternalNoteAddToDailyRequest(BaseModel):
+    topic_id: str = ""
+
+
+class ExternalNoteSyncSpaceRequest(BaseModel):
+    space_id: str = "external_notes"
+
+
+class ExternalNoteGenerateCardsRequest(BaseModel):
+    max_cards: int = 4
+
+
 # --- Response models ---
+
+class ExternalSourceResponse(BaseModel):
+    source_id: str
+    name: str = ""
+    source_type: str = ""
+    repo_owner: str = ""
+    repo_name: str = ""
+    branch: str = "main"
+    docs_path: str = "docs"
+    homepage_url: str = ""
+    license_name: str = ""
+    license_url: str = ""
+    enabled: bool | int = True
+    config_json: str = "{}"
+    last_commit_sha: str = ""
+    last_synced_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class ExternalNoteFacetOption(BaseModel):
+    value: str | int
+    count: int = 0
+
+
+class ExternalNoteFacetsResponse(BaseModel):
+    conferences: list[ExternalNoteFacetOption] = []
+    years: list[ExternalNoteFacetOption] = []
+    domains: list[ExternalNoteFacetOption] = []
+
+
+class ExternalNoteSyncRunResponse(BaseModel):
+    sync_id: str
+    source_id: str = ""
+    status: str = "pending"
+    commit_sha: str = ""
+    scanned: int = 0
+    fetched: int = 0
+    inserted: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    failed: int = 0
+    error_json: str = "[]"
+    errors: list[dict[str, Any]] = []
+    started_at: str = ""
+    finished_at: str = ""
+    created_at: str = ""
+
+
+class ExternalNoteMatchResponse(BaseModel):
+    match_id: str = ""
+    note_id: str = ""
+    target_kind: str = ""
+    target_id: str = ""
+    match_type: str = ""
+    confidence: float = 0.0
+    reason: str = ""
+    created_at: str = ""
+
+
+class ExternalPaperNoteResponse(BaseModel):
+    note_id: str
+    source_id: str = "paper_notes"
+    source_path: str = ""
+    source_url: str = ""
+    raw_url: str = ""
+    commit_sha: str = ""
+    content_hash: str = ""
+    conference: str = ""
+    year: int = 0
+    domain: str = ""
+    title: str = ""
+    title_zh: str = ""
+    arxiv_id: str = ""
+    arxiv_url: str = ""
+    pdf_url: str = ""
+    code_url: str = ""
+    project_url: str = ""
+    authors: list[str] = []
+    tags: list[str] = []
+    keywords: list[str] = []
+    summary: str = ""
+    method: str = ""
+    experiments: str = ""
+    limitations: str = ""
+    related_papers: list[str] = []
+    markdown: str = ""
+    parsed: dict[str, Any] = {}
+    status: str = "new"
+    utility_score: float = 0.0
+    utility_reason: str = ""
+    linked_paper_id: str = ""
+    linked_daily_item_id: str = ""
+    linked_run_id: str = ""
+    sync_status: str = "not_synced"
+    dify_document_id: str = ""
+    error_msg: str = ""
+    first_seen_at: str = ""
+    updated_at: str = ""
+    matches: list[ExternalNoteMatchResponse] = []
+
+
+class ExternalPaperNoteListResponse(BaseModel):
+    items: list[ExternalPaperNoteResponse] = []
+    total: int = 0
+    limit: int = 20
+    offset: int = 0
+    has_more: bool = False
+    latest_sync: ExternalNoteSyncRunResponse | None = None
+
 
 class PaperResponse(BaseModel):
     paper_id: str

@@ -114,6 +114,23 @@ class DailyRecommendationSchedulerTests(unittest.TestCase):
             "2026-06-09T06:00:00+08:00",
         )
 
+    def test_missed_refresh_date_after_configured_time(self) -> None:
+        import datetime as dt
+
+        from app.services.daily_scheduler import missed_refresh_date
+
+        before = dt.datetime.fromisoformat("2026-06-08T05:59:00+08:00")
+        self.assertEqual(
+            missed_refresh_date(before, hour=6, minute=0, timezone="Asia/Shanghai"),
+            "",
+        )
+
+        after = dt.datetime.fromisoformat("2026-06-08T06:01:00+08:00")
+        self.assertEqual(
+            missed_refresh_date(after, hour=6, minute=0, timezone="Asia/Shanghai"),
+            "2026-06-08",
+        )
+
 
 class DailyRecommendationApiTests(unittest.TestCase):
     def setUp(self) -> None:

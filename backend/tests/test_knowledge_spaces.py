@@ -56,11 +56,13 @@ class KnowledgeSpaceApiTests(unittest.TestCase):
         self.assertEqual(spaces["main_analysis"]["dify_dataset_id"], "main-analysis-ds")
         self.assertEqual(spaces["daily_source"]["dify_dataset_id"], "daily-source-ds")
         self.assertEqual(spaces["daily_analysis"]["dify_dataset_id"], "daily-analysis-ds")
+        self.assertEqual(spaces["external_notes"]["space_type"], "external_notes")
+        self.assertEqual(spaces["external_notes"]["dify_dataset_id"], "")
 
         con = sqlite3.connect(self.db_file)
         count = con.execute("SELECT COUNT(*) FROM knowledge_spaces").fetchone()[0]
         con.close()
-        self.assertEqual(count, 4)
+        self.assertEqual(count, 5)
 
     def test_upload_paper_adds_main_source_item(self) -> None:
         pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"

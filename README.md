@@ -9,10 +9,6 @@
 </p>
 
 <p align="center">
-  <img src="example.png" alt="AI4Sec 工作台界面预览" width="900" />
-</p>
-
-<p align="center">
   <a href="./README.en.md">English README</a>
 </p>
 
@@ -190,6 +186,16 @@ ai4sec/
 ├── docker-compose.yml
 └── .env.example
 ```
+
+## 隐私与公开发布
+
+不要提交 `.env`、`docker-data/`、`.local-dev-data/`、`backend/data/`、`dify-rag/`、`ai4sec-dify-sync/state/*.db`、PDF、数据库、解析产物或任何 API Key。本仓库提供发布前检查：
+
+```bash
+scripts/check_public_release.sh
+```
+
+如果本地 Git 历史曾包含私有文件，请使用干净历史快照发布，或先用 `git filter-repo`/BFG 清理历史。
 
 ## 许可证
 

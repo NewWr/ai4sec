@@ -10,6 +10,8 @@ from app.models.schemas import (
     LLMConnectionTestResponse,
     LLMSettingsResponse,
     LLMSettingsUpdateRequest,
+    DailyRecommendationTopicResponse,
+    DailyRecommendationTopicsUpdateRequest,
 )
 from app.rate_limit import limiter
 from app.services.llm_runtime_config import (
@@ -18,6 +20,7 @@ from app.services.llm_runtime_config import (
     test_llm_connection,
     update_llm_runtime_config,
 )
+from app.services.daily_recommendations import list_topics, update_topics
 
 logger = logging.getLogger("scholar.settings")
 
@@ -72,3 +75,24 @@ async def test_llm_settings(request: Request, body: LLMConnectionTestRequest) ->
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return LLMConnectionTestResponse(**data)
+
+
+@router.get("/daily-topics", response_model=list[DailyRecommendationTopicResponse])
+@limiter.limit("30/minute")
+async def get_daily_topic_settings(request: Request) -> list[DailyRecommendationTopicResponse]:
+    del request
+    return [DailyRecommendationTopicResponse(**topic) for topic in await list_topics()]
+
+
+@router.put("/daily-topics", response_model=list[DailyRecommendationTopicResponse], dependencies=[Depends(require_admin_token)])
+@limiter.limit("10/minute")
+async def update_daily_topic_settings(
+    request: Request,
+    body: DailyRecommendationTopicsUpdateRequest,
+) -> list[DailyRecommendationTopicResponse]:
+    del request
+    try:
+        topics = await update_topics([topic.model_dump() for topic in body.topics])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [DailyRecommendationTopicResponse(**topic) for topic in topics]

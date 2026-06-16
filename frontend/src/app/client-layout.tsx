@@ -9,6 +9,7 @@ import { usePathname } from "next/navigation";
 const NAV_ITEMS: { href: string; en: string; zh: string }[] = [
   { href: "/upload", en: "Upload & Analyze", zh: "上传与分析" },
   { href: "/daily", en: "Daily", zh: "每日推荐" },
+  { href: "/paper-notes", en: "Paper Notes", zh: "顶会雷达" },
   { href: "/papers", en: "Papers", zh: "本地论文" },
   { href: "/library", en: "Knowledge Base", zh: "知识库" },
   { href: "/knowledge", en: "Cards", zh: "知识卡片" },

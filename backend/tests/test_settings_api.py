@@ -67,6 +67,39 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(models.status_code, 200, models.text)
         self.assertEqual(models.json(), {"models": ["model-a", "model-b"], "default": "model-a"})
 
+    def test_update_daily_topics_persists_without_docker_rebuild(self) -> None:
+        saved = self.client.put(
+            "/api/settings/daily-topics",
+            json={
+                "topics": [
+                    {
+                        "topic_id": "custom_security",
+                        "name": "Custom Security",
+                        "name_zh": "自定义安全方向",
+                        "enabled": True,
+                        "sort_order": 5,
+                        "config": {
+                            "arxiv_categories": ["cs.CR", "cs.AI"],
+                            "must": {"any": [["watermark"], ["backdoor", "detection"]]},
+                            "should": ["diffusion", "llm"],
+                            "exclude": ["quantum"],
+                            "min_score": 0.6,
+                        },
+                    }
+                ]
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        data = saved.json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["topic_id"], "custom_security")
+        self.assertEqual(data[0]["config"]["must"], {"any": [["watermark"], ["backdoor", "detection"]]})
+
+        topics = self.client.get("/api/daily/topics")
+        self.assertEqual(topics.status_code, 200, topics.text)
+        topic_ids = {topic["topic_id"] for topic in topics.json()}
+        self.assertEqual(topic_ids, {"custom_security"})
+
 
 if __name__ == "__main__":
     unittest.main()

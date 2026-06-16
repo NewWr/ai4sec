@@ -11,9 +11,10 @@ MAIN_SOURCE_SPACE_ID = "main_source"
 MAIN_ANALYSIS_SPACE_ID = "main_analysis"
 DAILY_SOURCE_SPACE_ID = "daily_source"
 DAILY_ANALYSIS_SPACE_ID = "daily_analysis"
+EXTERNAL_NOTES_SPACE_ID = "external_notes"
 DIFY_SYNC_SKIP_DATASET_ID = "__skip_dify_sync__"
 
-VALID_ITEM_KINDS = {"paper", "run", "dify_document", "card", "snippet"}
+VALID_ITEM_KINDS = {"paper", "run", "dify_document", "card", "snippet", "external_note"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,16 @@ def default_spaces() -> list[DefaultSpace]:
             description_zh="每日推荐论文生成的 Snap、Lens、Sphere 或 Auto 解读报告。",
             dify_dataset_id=getattr(settings, "daily_recommendation_analysis_dataset_id", "").strip(),
             sort_order=40,
+        ),
+        DefaultSpace(
+            space_id=EXTERNAL_NOTES_SPACE_ID,
+            name="External Paper Notes",
+            name_zh="外部顶会笔记知识库",
+            space_type="external_notes",
+            description="External public paper notes imported from Paper-Notes and similar sources.",
+            description_zh="来自 Paper-Notes 等公开来源的外部论文笔记，经用户确认或规则筛选后同步。",
+            dify_dataset_id="",
+            sort_order=50,
         ),
     ]
 

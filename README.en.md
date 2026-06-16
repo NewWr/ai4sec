@@ -9,10 +9,6 @@
 </p>
 
 <p align="center">
-  <img src="example.png" alt="AI4Sec workspace preview" width="900" />
-</p>
-
-<p align="center">
   <a href="./README.md">中文 README</a>
 </p>
 

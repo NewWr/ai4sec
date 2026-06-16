@@ -94,6 +94,123 @@ CREATE TABLE IF NOT EXISTS daily_recommendation_feedback (
 CREATE INDEX IF NOT EXISTS idx_daily_feedback_topic_action
     ON daily_recommendation_feedback(topic_id, action, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS external_sources (
+    source_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
+    repo_owner TEXT NOT NULL DEFAULT '',
+    repo_name TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT 'main',
+    docs_path TEXT NOT NULL DEFAULT 'docs',
+    homepage_url TEXT NOT NULL DEFAULT '',
+    license_name TEXT NOT NULL DEFAULT '',
+    license_url TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    last_commit_sha TEXT NOT NULL DEFAULT '',
+    last_synced_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS external_paper_notes (
+    note_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL DEFAULT 'paper_notes',
+    source_path TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    raw_url TEXT NOT NULL DEFAULT '',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    conference TEXT NOT NULL DEFAULT '',
+    year INTEGER NOT NULL DEFAULT 0,
+    domain TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    title_zh TEXT NOT NULL DEFAULT '',
+    arxiv_id TEXT NOT NULL DEFAULT '',
+    arxiv_url TEXT NOT NULL DEFAULT '',
+    pdf_url TEXT NOT NULL DEFAULT '',
+    code_url TEXT NOT NULL DEFAULT '',
+    project_url TEXT NOT NULL DEFAULT '',
+    authors_json TEXT NOT NULL DEFAULT '[]',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    method TEXT NOT NULL DEFAULT '',
+    experiments TEXT NOT NULL DEFAULT '',
+    limitations TEXT NOT NULL DEFAULT '',
+    related_papers_json TEXT NOT NULL DEFAULT '[]',
+    markdown TEXT NOT NULL DEFAULT '',
+    parsed_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'new',
+    utility_score REAL NOT NULL DEFAULT 0.0,
+    utility_reason TEXT NOT NULL DEFAULT '',
+    linked_paper_id TEXT NOT NULL DEFAULT '',
+    linked_daily_item_id TEXT NOT NULL DEFAULT '',
+    linked_run_id TEXT NOT NULL DEFAULT '',
+    sync_status TEXT NOT NULL DEFAULT 'not_synced',
+    dify_document_id TEXT NOT NULL DEFAULT '',
+    error_msg TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source_id, source_path)
+);
+CREATE INDEX IF NOT EXISTS idx_external_notes_score
+    ON external_paper_notes(utility_score DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_external_notes_filters
+    ON external_paper_notes(conference, year, domain, status);
+CREATE INDEX IF NOT EXISTS idx_external_notes_arxiv
+    ON external_paper_notes(arxiv_id);
+CREATE INDEX IF NOT EXISTS idx_external_notes_linked_paper
+    ON external_paper_notes(linked_paper_id);
+
+CREATE TABLE IF NOT EXISTS external_note_versions (
+    version_id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES external_paper_notes(note_id),
+    source_id TEXT NOT NULL DEFAULT '',
+    source_path TEXT NOT NULL DEFAULT '',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    markdown TEXT NOT NULL DEFAULT '',
+    parsed_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(note_id, content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS external_note_sync_runs (
+    sync_id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    scanned INTEGER NOT NULL DEFAULT 0,
+    fetched INTEGER NOT NULL DEFAULT 0,
+    inserted INTEGER NOT NULL DEFAULT 0,
+    updated INTEGER NOT NULL DEFAULT 0,
+    unchanged INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    error_json TEXT NOT NULL DEFAULT '[]',
+    started_at TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_external_sync_runs_source_created
+    ON external_note_sync_runs(source_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS external_note_matches (
+    match_id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES external_paper_notes(note_id),
+    target_kind TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    match_type TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(note_id, target_kind, target_id, match_type)
+);
+CREATE INDEX IF NOT EXISTS idx_external_matches_note
+    ON external_note_matches(note_id, target_kind);
+CREATE INDEX IF NOT EXISTS idx_external_matches_target
+    ON external_note_matches(target_kind, target_id);
+
 CREATE TABLE IF NOT EXISTS paper_display_cache (
     paper_id           TEXT PRIMARY KEY REFERENCES papers(paper_id),
     title_zh           TEXT NOT NULL DEFAULT '',

@@ -153,6 +153,23 @@ class AppSettings(BaseSettings):
         alias="DAILY_RECOMMENDATION_AUTO_REFRESH_TIMEZONE",
     )
 
+    # --- External Paper-Notes radar ---
+    paper_notes_enabled: bool = Field(default=True, alias="PAPER_NOTES_ENABLED")
+    paper_notes_auto_sync_enabled: bool = Field(default=False, alias="PAPER_NOTES_AUTO_SYNC_ENABLED")
+    paper_notes_repo_owner: str = Field(default="zhaoyang97", alias="PAPER_NOTES_REPO_OWNER")
+    paper_notes_repo_name: str = Field(default="Paper-Notes", alias="PAPER_NOTES_REPO_NAME")
+    paper_notes_branch: str = Field(default="main", alias="PAPER_NOTES_BRANCH")
+    paper_notes_docs_path: str = Field(default="docs", alias="PAPER_NOTES_DOCS_PATH")
+    paper_notes_github_token: str = Field(default="", alias="PAPER_NOTES_GITHUB_TOKEN")
+    paper_notes_sync_hour: int = Field(default=7, alias="PAPER_NOTES_SYNC_HOUR")
+    paper_notes_sync_minute: int = Field(default=0, alias="PAPER_NOTES_SYNC_MINUTE")
+    paper_notes_sync_timezone: str = Field(default="Asia/Shanghai", alias="PAPER_NOTES_SYNC_TIMEZONE")
+    paper_notes_fetch_concurrency: int = Field(default=8, alias="PAPER_NOTES_FETCH_CONCURRENCY")
+    # 0 means no application-side cap; the GitHub tree API is still the source boundary.
+    paper_notes_max_files_per_sync: int = Field(default=0, alias="PAPER_NOTES_MAX_FILES_PER_SYNC")
+    paper_notes_utility_threshold: float = Field(default=0.55, alias="PAPER_NOTES_UTILITY_THRESHOLD")
+    paper_notes_external_space_id: str = Field(default="external_notes", alias="PAPER_NOTES_EXTERNAL_SPACE_ID")
+
     # --- Local automatic knowledge-card generation ---
     auto_knowledge_cards_enabled: bool = Field(default=True, alias="AUTO_KNOWLEDGE_CARDS_ENABLED")
     auto_knowledge_card_max_per_run: int = Field(default=12, alias="AUTO_KNOWLEDGE_CARD_MAX_PER_RUN")
